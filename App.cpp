@@ -753,8 +753,9 @@ void App::Update()
 	objectConstants.uvScale[0] = 2.0f;
 	objectConstants.uvScale[1] = 2.0f;
 
-	objectConstants.uvOffset[0] = time * 0.1f;
-	objectConstants.uvOffset[1] = time * 0.05f;
+	uvOffsetAccumulated += deltaTime * animationSpeed;
+	objectConstants.uvOffset[0] = uvOffsetAccumulated;
+	objectConstants.uvOffset[1] = uvOffsetAccumulated;
 
 	memcpy(cbMappedData, &objectConstants, sizeof(ObjectConstants));
 }
@@ -868,6 +869,8 @@ void App::UpdateCamera(float deltaTime)
 	if (keys['S']) camera.position = camera.position + forward * (-moveSpeed);
 	if (keys['A']) camera.position = camera.position + right * (-moveSpeed);
 	if (keys['D']) camera.position = camera.position + right * moveSpeed;
+	if (keys['E']) animationSpeed += 1.5f * deltaTime;
+	if (keys['Q']) animationSpeed -= 1.5f * deltaTime;
 	if (keys[VK_SPACE]) camera.position.y += moveSpeed;
 	if (keys[VK_SHIFT]) camera.position.y -= moveSpeed;
 

@@ -158,5 +158,8 @@ private:
 	float cameraYaw;
 	float cameraPitch;
 
+	float animationSpeed = 0.05f;
+	float uvOffsetAccumulated = 0.0f;
+
 };
 
