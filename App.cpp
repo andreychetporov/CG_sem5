@@ -143,12 +143,48 @@ bool App::InitD3D()
 	if (!CreateSwapChain()) { return false; }
 	if (!CreateDescriptors()) {return false;}
 	if (!CreateRTV()) { return false; }
-	if (!CreateDepthBuffer()) { return false; }
-	if (!CreateRootSignature()) { return false; }
-	if (!CompileShaders()) { return false; }
-	if (!CreatePSO()) { return false; }
+	if (!renderingSystem.Initialize(device.Get(), _width, _height)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
 	if (!LoadModel("model/sponza.obj")) { return false; }
+
+	Light dirLight;
+	dirLight.type = (float)LightType::Directional;
+	dirLight.direction[0] = 0.3f;
+	dirLight.direction[1] = -1.0f;
+	dirLight.direction[2] = 0.5f;
+	dirLight.color[0] = 1.0f;
+	dirLight.color[1] = 0.2f;
+	dirLight.color[2] = 0.2f;
+	dirLight.intensity = 0.6f;
+	renderingSystem.AddLight(dirLight);
+
+	Light pointLight;
+	pointLight.type = (float)LightType::Point;
+	pointLight.position[0] = 0.0f;
+	pointLight.position[1] = 5.0f;
+	pointLight.position[2] = 0.0f;
+	pointLight.color[0] = 0.2f;
+	pointLight.color[1] = 1.0f;
+	pointLight.color[2] = 0.2f;
+	pointLight.intensity = 2.5f;
+	pointLight.range = 20.0f;
+	renderingSystem.AddLight(pointLight);
+
+	Light spotLight;
+	spotLight.type = (float)LightType::Spot;
+	spotLight.position[0] = 25.0f;
+	spotLight.position[1] = 8.0f;
+	spotLight.position[2] = 0.0f;
+	spotLight.direction[0] = -0.3f;
+	spotLight.direction[1] = -1.0f;
+	spotLight.direction[2] = -0.3f;
+	spotLight.color[0] = 0.2f;
+	spotLight.color[1] = 0.2f;
+	spotLight.color[2] = 1.0f;
+	spotLight.intensity = 12.0f;
+	spotLight.range = 25.0f;
+	spotLight.spotAngle = 0.6f;
+	renderingSystem.AddLight(spotLight);
 
 	viewport.TopLeftX = 0;
 	viewport.TopLeftY = 0;
@@ -723,6 +759,8 @@ void App::Update()
 
 	UpdateCamera(deltaTime);
 
+	renderingSystem.SetCameraPosition(camera.position.x, camera.position.y, camera.position.z);
+
 	Matrix4x4 scale = Matrix4x4::Scale(0.2f, 0.2f, 0.2f);
 	Matrix4x4 world = scale;
 	Matrix4x4 viewProj = camera.GetViewProjectionMatrix();
@@ -750,8 +788,8 @@ void App::Update()
 	objectConstants.ambientColor[2] = 0.4f;
 	objectConstants.ambientColor[3] = 0.2f;
 
-	objectConstants.uvScale[0] = 2.0f;
-	objectConstants.uvScale[1] = 2.0f;
+	objectConstants.uvScale[0] = 1.0f;
+	objectConstants.uvScale[1] = 1.0f;
 
 	uvOffsetAccumulated += deltaTime * animationSpeed;
 	objectConstants.uvOffset[0] = uvOffsetAccumulated;
@@ -765,26 +803,15 @@ void App::Render()
 	FlushCommandQueue();
 
 	commandAllocator->Reset();
-	commandList->Reset(commandAllocator.Get(), pipelineState.Get());
+	commandList->Reset(commandAllocator.Get(), renderingSystem.GetGeometryPSO());
 
 	UINT backBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
 	CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(rtvHeap->GetCPUDescriptorHandleForHeapStart(), backBufferIndex, sizeRTVHeap);
 
-	D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsvHeap->GetCPUDescriptorHandleForHeapStart();
+	renderingSystem.BeginGeometryPass(commandList.Get());
 
-	CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(swapChainBuffers[backBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-	commandList->ResourceBarrier(1, &barrier);
-
-	commandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-
-	commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.f, 0, 0, nullptr);
-
-	commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-
-	commandList->SetGraphicsRootSignature(rootSignature.Get());
-	commandList->SetPipelineState(pipelineState.Get());
+	commandList->SetGraphicsRootSignature(renderingSystem.GetGeometryRootSignature());
+	commandList->SetPipelineState(renderingSystem.GetGeometryPSO());
 	commandList->RSSetViewports(1, &viewport);
 	commandList->RSSetScissorRects(1, &scissorRect);
 
@@ -805,8 +832,11 @@ void App::Render()
 		commandList->DrawIndexedInstanced(submesh.indexCount, 1, submesh.indexStart, 0, 0);
 	}
 
-	barrier = CD3DX12_RESOURCE_BARRIER::Transition(swapChainBuffers[backBufferIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-	commandList->ResourceBarrier(1, &barrier);
+	renderingSystem.EndGeometryPass(commandList.Get());
+
+	renderingSystem.UpdateLights(commandList.Get());
+
+	renderingSystem.RenderLightingPass(commandList.Get(), swapChainBuffers[backBufferIndex].Get(), rtv);
 
 	commandList->Close();
 
@@ -820,6 +850,11 @@ void App::OnKeyDown(WPARAM key)
 {
 	if (key < 256)
 		keys[key] = true;
+
+	if (key == '1') renderingSystem.SetDebugMode(0.0f); // Normal rendering
+	if (key == '2') renderingSystem.SetDebugMode(1.0f); // Show positions
+	if (key == '3') renderingSystem.SetDebugMode(2.0f); // Show normals
+	if (key == '4') renderingSystem.SetDebugMode(3.0f); // Show albedo
 }
 
 void App::OnKeyUp(WPARAM key)
