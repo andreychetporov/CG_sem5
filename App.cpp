@@ -149,42 +149,16 @@ bool App::InitD3D()
 
 	Light dirLight;
 	dirLight.type = (float)LightType::Directional;
+	
 	dirLight.direction[0] = 0.3f;
-	dirLight.direction[1] = -1.0f;
+	dirLight.direction[1] = -0.8f;
 	dirLight.direction[2] = 0.5f;
+	
 	dirLight.color[0] = 1.0f;
-	dirLight.color[1] = 0.2f;
-	dirLight.color[2] = 0.2f;
-	dirLight.intensity = 0.6f;
+	dirLight.color[1] = 0.95f;
+	dirLight.color[2] = 0.85f;
+	dirLight.intensity = 1.2f;
 	renderingSystem.AddLight(dirLight);
-
-	Light pointLight;
-	pointLight.type = (float)LightType::Point;
-	pointLight.position[0] = 0.0f;
-	pointLight.position[1] = 5.0f;
-	pointLight.position[2] = 0.0f;
-	pointLight.color[0] = 0.2f;
-	pointLight.color[1] = 1.0f;
-	pointLight.color[2] = 0.2f;
-	pointLight.intensity = 2.5f;
-	pointLight.range = 20.0f;
-	renderingSystem.AddLight(pointLight);
-
-	Light spotLight;
-	spotLight.type = (float)LightType::Spot;
-	spotLight.position[0] = 25.0f;
-	spotLight.position[1] = 8.0f;
-	spotLight.position[2] = 0.0f;
-	spotLight.direction[0] = -0.3f;
-	spotLight.direction[1] = -1.0f;
-	spotLight.direction[2] = -0.3f;
-	spotLight.color[0] = 0.2f;
-	spotLight.color[1] = 0.2f;
-	spotLight.color[2] = 1.0f;
-	spotLight.intensity = 12.0f;
-	spotLight.range = 25.0f;
-	spotLight.spotAngle = 0.6f;
-	renderingSystem.AddLight(spotLight);
 
 	viewport.TopLeftX = 0;
 	viewport.TopLeftY = 0;
@@ -581,23 +555,40 @@ bool App::CreateConstantBuffer()
 
 bool App::LoadTextures(const std::map<std::string, Material>& materials)
 {
-	std::vector<std::string> textureFiles;
+	std::vector<std::string> diffuseFiles;
+	std::vector<std::string> displacementFiles;
+	std::vector<std::string> normalFiles;
+
 	for (const auto& mat : materials)
 	{
 		if (!mat.second.diffuseTexture.empty())
 		{
-			textureFiles.push_back("model/" + mat.second.diffuseTexture);
+			
+			diffuseFiles.push_back("model/" + mat.second.diffuseTexture);
+
+			
+			std::string baseName = mat.second.diffuseTexture;
+			size_t dotPos = baseName.find_last_of('.');
+			if (dotPos != std::string::npos)
+			{
+				baseName = baseName.substr(0, dotPos);
+			}
+
+			displacementFiles.push_back("model/" + baseName + "_displacement.tga");
+			normalFiles.push_back("model/" + baseName + "_ddn.tga");
 		}
 	}
 
-	if (textureFiles.empty())
+	if (diffuseFiles.empty())
 	{
 		MessageBoxA(nullptr, "No textures found in materials", "Error", MB_OK);
 		return false;
 	}
 
+	
+	UINT totalTextures = (UINT)(diffuseFiles.size() * 3);
 	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-	heapDesc.NumDescriptors = 1 + (UINT)textureFiles.size();
+	heapDesc.NumDescriptors = 1 + totalTextures;
 	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
@@ -623,42 +614,151 @@ bool App::LoadTextures(const std::map<std::string, Material>& materials)
 	}
 
 	UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	UINT descriptorIndex = 1;
 
-	for (size_t i = 0; i < textureFiles.size(); i++)
+	
+	for (size_t i = 0; i < diffuseFiles.size(); i++)
 	{
-		std::vector<BYTE> textureData;
-		UINT width, height;
-		DXGI_FORMAT format;
-
-		if (!TextureLoader::LoadTGA(textureFiles[i].c_str(), textureData, width, height, format))
+		
 		{
+			std::vector<BYTE> textureData;
+			UINT width, height;
+			DXGI_FORMAT format;
+
 			char msg[256];
-			sprintf_s(msg, "Failed to load texture: %s", textureFiles[i].c_str());
+			sprintf_s(msg, "Loading diffuse texture [%d/%d]: %s\n", (int)i + 1, (int)diffuseFiles.size(), diffuseFiles[i].c_str());
 			OutputDebugStringA(msg);
-			continue;
+
+			if (!TextureLoader::LoadTGA(diffuseFiles[i].c_str(), textureData, width, height, format))
+			{
+				sprintf_s(msg, "ERROR: Failed to load diffuse texture: %s\n", diffuseFiles[i].c_str());
+				OutputDebugStringA(msg);
+				continue;
+			}
+
+			sprintf_s(msg, "SUCCESS: Loaded diffuse %dx%d\n", width, height);
+			OutputDebugStringA(msg);
+
+			ComPtr<ID3D12Resource> texture;
+			ComPtr<ID3D12Resource> uploadBuffer;
+
+			if (!TextureLoader::CreateTexture(device.Get(), commandList.Get(),
+				textureData, width, height, format, texture, uploadBuffer))
+			{
+				continue;
+			}
+
+			CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(cbvHeap->GetCPUDescriptorHandleForHeapStart(), descriptorIndex++, descriptorSize);
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+			srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srvDesc.Format = format;
+			srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Texture2D.MipLevels = 1;
+
+			device->CreateShaderResourceView(texture.Get(), &srvDesc, srvHandle);
+
+			textures.push_back(texture);
+			textureUploadBuffers.push_back(uploadBuffer);
 		}
 
-		ComPtr<ID3D12Resource> texture;
-		ComPtr<ID3D12Resource> uploadBuffer;
-
-		if (!TextureLoader::CreateTexture(device.Get(), commandList.Get(),
-			textureData, width, height, format, texture, uploadBuffer))
+		
 		{
-			continue;
+			std::vector<BYTE> textureData;
+			UINT width, height;
+			DXGI_FORMAT format;
+
+			char msg[256];
+			sprintf_s(msg, "Loading displacement texture [%d/%d]: %s\n", (int)i + 1, (int)displacementFiles.size(), displacementFiles[i].c_str());
+			OutputDebugStringA(msg);
+
+			if (!TextureLoader::LoadTGA(displacementFiles[i].c_str(), textureData, width, height, format))
+			{
+				sprintf_s(msg, "WARNING: Displacement texture not found, using fallback: %s\n", displacementFiles[i].c_str());
+				OutputDebugStringA(msg);
+
+				
+				width = height = 1;
+				format = DXGI_FORMAT_R8G8B8A8_UNORM;
+				textureData = { 255, 255, 255, 255 };
+			}
+			else
+			{
+				sprintf_s(msg, "SUCCESS: Loaded displacement %dx%d\n", width, height);
+				OutputDebugStringA(msg);
+			}
+
+			ComPtr<ID3D12Resource> texture;
+			ComPtr<ID3D12Resource> uploadBuffer;
+
+			if (!TextureLoader::CreateTexture(device.Get(), commandList.Get(),
+				textureData, width, height, format, texture, uploadBuffer))
+			{
+				continue;
+			}
+
+			CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(cbvHeap->GetCPUDescriptorHandleForHeapStart(), descriptorIndex++, descriptorSize);
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+			srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srvDesc.Format = format;
+			srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Texture2D.MipLevels = 1;
+
+			device->CreateShaderResourceView(texture.Get(), &srvDesc, srvHandle);
+
+			displacementTextures.push_back(texture);
+			textureUploadBuffers.push_back(uploadBuffer);
 		}
 
-		CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(cbvHeap->GetCPUDescriptorHandleForHeapStart(), 1 + (INT)i, descriptorSize);
+		
+		{
+			std::vector<BYTE> textureData;
+			UINT width, height;
+			DXGI_FORMAT format;
 
-		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-		srvDesc.Format = format;
-		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MipLevels = 1;
+			char msg[256];
+			sprintf_s(msg, "Loading normal texture [%d/%d]: %s\n", (int)i + 1, (int)normalFiles.size(), normalFiles[i].c_str());
+			OutputDebugStringA(msg);
 
-		device->CreateShaderResourceView(texture.Get(), &srvDesc, srvHandle);
+			if (!TextureLoader::LoadTGA(normalFiles[i].c_str(), textureData, width, height, format))
+			{
+				sprintf_s(msg, "WARNING: Normal texture not found, using fallback: %s\n", normalFiles[i].c_str());
+				OutputDebugStringA(msg);
 
-		textures.push_back(texture);
-		textureUploadBuffers.push_back(uploadBuffer);
+				
+				width = height = 1;
+				format = DXGI_FORMAT_R8G8B8A8_UNORM;
+				textureData = { 128, 128, 255, 255 };
+			}
+			else
+			{
+				sprintf_s(msg, "SUCCESS: Loaded normal map %dx%d\n", width, height);
+				OutputDebugStringA(msg);
+			}
+
+			ComPtr<ID3D12Resource> texture;
+			ComPtr<ID3D12Resource> uploadBuffer;
+
+			if (!TextureLoader::CreateTexture(device.Get(), commandList.Get(),
+				textureData, width, height, format, texture, uploadBuffer))
+			{
+				continue;
+			}
+
+			CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(cbvHeap->GetCPUDescriptorHandleForHeapStart(), descriptorIndex++, descriptorSize);
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+			srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srvDesc.Format = format;
+			srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Texture2D.MipLevels = 1;
+
+			device->CreateShaderResourceView(texture.Get(), &srvDesc, srvHandle);
+
+			normalTextures.push_back(texture);
+			textureUploadBuffers.push_back(uploadBuffer);
+		}
 	}
 
 	if (FAILED(commandList->Close()))
@@ -795,23 +895,50 @@ void App::Update()
 	objectConstants.uvOffset[0] = uvOffsetAccumulated;
 	objectConstants.uvOffset[1] = uvOffsetAccumulated;
 
+	
+	objectConstants.cameraPosition[0] = camera.position.x;
+	objectConstants.cameraPosition[1] = camera.position.y;
+	objectConstants.cameraPosition[2] = camera.position.z;
+	objectConstants.tessellationFactor = tessellationLevel;
+	objectConstants.minTessDistance = 1.0f;   
+	objectConstants.maxTessDistance = 80.0f;  
+	objectConstants.minTessFactor = 1.0f;     
+	objectConstants.maxTessFactor = 32.0f; 
+
 	memcpy(cbMappedData, &objectConstants, sizeof(ObjectConstants));
 }
 
 void App::Render()
 {
+	UINT backBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
 	FlushCommandQueue();
 
 	commandAllocator->Reset();
-	commandList->Reset(commandAllocator.Get(), renderingSystem.GetGeometryPSO());
 
-	UINT backBufferIndex = swapChain->GetCurrentBackBufferIndex();
+	
+	ID3D12PipelineState* pso;
+	ID3D12RootSignature* rootSig;
+
+	if (useTessellation)
+	{
+		pso = wireframeMode ? renderingSystem.GetTessellationWireframePSO() : renderingSystem.GetTessellationPSO();
+		rootSig = renderingSystem.GetTessellationRootSignature();
+	}
+	else
+	{
+		pso = renderingSystem.GetGeometryPSO();
+		rootSig = renderingSystem.GetGeometryRootSignature();
+	}
+
+	commandList->Reset(commandAllocator.Get(), pso);
+
 	CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(rtvHeap->GetCPUDescriptorHandleForHeapStart(), backBufferIndex, sizeRTVHeap);
 
 	renderingSystem.BeginGeometryPass(commandList.Get());
 
-	commandList->SetGraphicsRootSignature(renderingSystem.GetGeometryRootSignature());
-	commandList->SetPipelineState(renderingSystem.GetGeometryPSO());
+	commandList->SetGraphicsRootSignature(rootSig);
+	commandList->SetPipelineState(pso);
 	commandList->RSSetViewports(1, &viewport);
 	commandList->RSSetScissorRects(1, &scissorRect);
 
@@ -819,16 +946,43 @@ void App::Render()
 	commandList->SetDescriptorHeaps(1, heaps);
 	commandList->SetGraphicsRootDescriptorTable(0, cbvHeap->GetGPUDescriptorHandleForHeapStart());
 
-	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	
+	if (useTessellation)
+	{
+		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+	}
+	else
+	{
+		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	}
+
 	commandList->IASetVertexBuffers(0, 1, &bufferView);
 	commandList->IASetIndexBuffer(&indexBufferView);
 
 	UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	UINT numMaterials = (UINT)textures.size();
 
 	for (const auto& submesh : submeshes)
 	{
-		CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(cbvHeap->GetGPUDescriptorHandleForHeapStart(), 1 + submesh.textureIndex, descriptorSize);
-		commandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+		if (useTessellation)
+		{
+			
+			
+			
+			UINT baseIndex = 1 + submesh.textureIndex * 3;
+			CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(cbvHeap->GetGPUDescriptorHandleForHeapStart(),
+				baseIndex, descriptorSize);
+			commandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+		}
+		else
+		{
+			
+			UINT baseIndex = 1 + submesh.textureIndex * 3;
+			CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(cbvHeap->GetGPUDescriptorHandleForHeapStart(),
+				baseIndex, descriptorSize);
+			commandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+		}
+
 		commandList->DrawIndexedInstanced(submesh.indexCount, 1, submesh.indexStart, 0, 0);
 	}
 
@@ -851,10 +1005,16 @@ void App::OnKeyDown(WPARAM key)
 	if (key < 256)
 		keys[key] = true;
 
-	if (key == '1') renderingSystem.SetDebugMode(0.0f); // Normal rendering
-	if (key == '2') renderingSystem.SetDebugMode(1.0f); // Show positions
-	if (key == '3') renderingSystem.SetDebugMode(2.0f); // Show normals
-	if (key == '4') renderingSystem.SetDebugMode(3.0f); // Show albedo
+	if (key == '1') renderingSystem.SetDebugMode(0.0f); 
+	if (key == '2') renderingSystem.SetDebugMode(1.0f); 
+	if (key == '3') renderingSystem.SetDebugMode(2.0f); 
+	if (key == '4') renderingSystem.SetDebugMode(3.0f); 
+
+	
+	if (key == 'T') useTessellation = !useTessellation; 
+	if (key == 'R') wireframeMode = !wireframeMode; 
+	if (key == VK_OEM_PLUS || key == VK_ADD) tessellationLevel = min(tessellationLevel + 1.0f, 64.0f); 
+	if (key == VK_OEM_MINUS || key == VK_SUBTRACT) tessellationLevel = max(tessellationLevel - 1.0f, 1.0f); 
 }
 
 void App::OnKeyUp(WPARAM key)

@@ -19,6 +19,8 @@ struct Material
 {
 	std::string name;
 	std::string diffuseTexture;
+	std::string displacementTexture;
+	std::string normalTexture;
 	float diffuseColor[3];
 };
 
@@ -46,6 +48,12 @@ struct ObjectConstants
 	float ambientColor[4];
 	float uvScale[2];
 	float uvOffset[2];
+	float cameraPosition[3];
+	float tessellationFactor;
+	float minTessDistance;
+	float maxTessDistance;
+	float minTessFactor;
+	float maxTessFactor;
 };
 
 class App
@@ -143,6 +151,8 @@ private:
 	UINT8* cbMappedData = nullptr;
 
 	std::vector<ComPtr<ID3D12Resource>> textures;
+	std::vector<ComPtr<ID3D12Resource>> displacementTextures;
+	std::vector<ComPtr<ID3D12Resource>> normalTextures;
 	std::vector<ComPtr<ID3D12Resource>> textureUploadBuffers;
 	std::vector<Submesh> submeshes;
 
@@ -163,6 +173,10 @@ private:
 
 	float animationSpeed = 0.0f;
 	float uvOffsetAccumulated = 0.0f;
+
+	bool useTessellation = true;
+	float tessellationLevel = 4.0f;
+	bool wireframeMode = false;
 
 };
 

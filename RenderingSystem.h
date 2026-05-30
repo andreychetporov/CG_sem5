@@ -56,6 +56,10 @@ public:
 	ID3D12RootSignature* GetGeometryRootSignature() const { return geometryRootSignature.Get(); }
 	ID3D12PipelineState* GetGeometryPSO() const { return geometryPSO.Get(); }
 
+	ID3D12RootSignature* GetTessellationRootSignature() const { return tessellationRootSignature.Get(); }
+	ID3D12PipelineState* GetTessellationPSO() const { return tessellationPSO.Get(); }
+	ID3D12PipelineState* GetTessellationWireframePSO() const { return tessellationWireframePSO.Get(); }
+
 	void SetCameraPosition(float x, float y, float z);
 	void SetDebugMode(float mode) { debugMode = mode; }
 
@@ -63,6 +67,7 @@ public:
 
 private:
 	bool CreateGeometryPass(ID3D12Device* device);
+	bool CreateTessellationPass(ID3D12Device* device);
 	bool CreateLightingPass(ID3D12Device* device);
 	bool CompileShaders(ID3D12Device* device);
 
@@ -76,11 +81,19 @@ private:
 	ComPtr<ID3D12RootSignature> geometryRootSignature;
 	ComPtr<ID3D12PipelineState> geometryPSO;
 
+	ComPtr<ID3D12RootSignature> tessellationRootSignature;
+	ComPtr<ID3D12PipelineState> tessellationPSO;
+	ComPtr<ID3D12PipelineState> tessellationWireframePSO;
+
 	ComPtr<ID3D12RootSignature> lightingRootSignature;
 	ComPtr<ID3D12PipelineState> lightingPSO;
 
 	ComPtr<ID3DBlob> geometryVS;
 	ComPtr<ID3DBlob> geometryPS;
+	ComPtr<ID3DBlob> tessellationVS;
+	ComPtr<ID3DBlob> tessellationHS;
+	ComPtr<ID3DBlob> tessellationDS;
+	ComPtr<ID3DBlob> tessellationPS;
 	ComPtr<ID3DBlob> lightingVS;
 	ComPtr<ID3DBlob> lightingPS;
 
