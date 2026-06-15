@@ -49,10 +49,6 @@ cbuffer PerObjectCB : register(b0)
     float maxTessDistance;
     float minTessFactor;
     float maxTessFactor;
-    float time;
-    float waveAmplitude;
-    float waveFrequency;
-    float waveSpeed;
 }
 
 Texture2D diffuseTexture : register(t0);
@@ -131,10 +127,6 @@ DomainOutput DSMain(HullConstantOutput input, float3 barycentricCoords : SV_Doma
 
     float displacementScale = 0.1f;
     position += normal * displacement * displacementScale;
-
-    // Wave animation
-    float wave = sin(position.x * waveFrequency + position.z * waveFrequency + time * waveSpeed) * waveAmplitude;
-    position += normal * wave;
 
     output.worldPos = mul(float4(position, 1.0f), world).xyz;
 

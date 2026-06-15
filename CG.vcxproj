@@ -129,6 +129,7 @@
     <ClCompile Include="GBuffer.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="RenderingSystem.cpp" />
+    <ClCompile Include="SceneCulling.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="App.h" />
@@ -137,6 +138,7 @@
     <ClInclude Include="Math.h" />
     <ClInclude Include="OBJLoader.h" />
     <ClInclude Include="RenderingSystem.h" />
+    <ClInclude Include="SceneCulling.h" />
     <ClInclude Include="TextureLoader.h" />
   </ItemGroup>
   <ItemGroup>
@@ -147,6 +149,12 @@
       <FileType>Document</FileType>
     </None>
     <None Include="LightingPass.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">4.0</ShaderModel>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+      <FileType>Document</FileType>
+    </None>
+    <None Include="ProceduralObject.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">4.0</ShaderModel>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
