@@ -100,6 +100,9 @@ bool GBuffer::Initialize(ID3D12Device* device, UINT width, UINT height)
 	srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	device->CreateShaderResourceView(albedoBuffer.Get(), &srvDesc, albedoSRV);
 
+	
+	isInRenderTargetState = true;
+
 	return true;
 }
 
@@ -133,10 +136,9 @@ void GBuffer::TransitionToRenderTarget(ID3D12GraphicsCommandList* commandList)
 	if (!isInRenderTargetState)
 	{
 		D3D12_RESOURCE_BARRIER barriers[3];
-		D3D12_RESOURCE_STATES fromState = isInRenderTargetState ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COMMON;
-		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(positionBuffer.Get(), fromState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-		barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(normalBuffer.Get(), fromState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-		barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(albedoBuffer.Get(), fromState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(positionBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(normalBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(albedoBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
 		commandList->ResourceBarrier(3, barriers);
 		isInRenderTargetState = true;
 	}
@@ -155,9 +157,8 @@ void GBuffer::TransitionToShaderResource(ID3D12GraphicsCommandList* commandList)
 	}
 }
 
-void GBuffer::Resize(ID3D12Device* device, UINT width, UINT height) 
+void GBuffer::Resize(ID3D12Device* device, UINT width, UINT height)
 {
-
 	positionBuffer.Reset();
 	normalBuffer.Reset();
 	albedoBuffer.Reset();
@@ -166,8 +167,10 @@ void GBuffer::Resize(ID3D12Device* device, UINT width, UINT height)
 	dsvHeap.Reset();
 	srvHeap.Reset();
 
-	Initialize(device, width, height);
+	
+	isInRenderTargetState = false;
 
+	Initialize(device, width, height);
 }
 
 void GBuffer::ClearRenderTargets(ID3D12GraphicsCommandList* commandList)

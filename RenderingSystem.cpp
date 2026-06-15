@@ -39,10 +39,13 @@ bool RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height)
 	if (!CreateGeometryPass(device))
 		return false;
 
+	if (!CreateTessellationPass(device))
+		return false;
+
 	if (!CreateLightingPass(device))
 		return false;
 
-	const UINT maxLights = 256;
+	const UINT maxLights = 32;
 	UINT lightBufferSize = (sizeof(Light) * maxLights + 255) & ~255;
 
 	D3D12_HEAP_PROPERTIES heapProps = {};
@@ -184,10 +187,19 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 {
 	geometryVS = CompileShader(L"GeometryPass.hlsl", "VSMain", "vs_5_0");
 	geometryPS = CompileShader(L"GeometryPass.hlsl", "PSMain", "ps_5_0");
+
+	tessellationVS = CompileShader(L"TessellationPass.hlsl", "VSMain", "vs_5_0");
+	tessellationHS = CompileShader(L"TessellationPass.hlsl", "HSMain", "hs_5_0");
+	tessellationDS = CompileShader(L"TessellationPass.hlsl", "DSMain", "ds_5_0");
+	tessellationPS = CompileShader(L"TessellationPass.hlsl", "PSMain", "ps_5_0");
+
 	lightingVS = CompileShader(L"LightingPass.hlsl", "VSMain", "vs_5_0");
 	lightingPS = CompileShader(L"LightingPass.hlsl", "PSMain", "ps_5_0");
 
 	if (!geometryVS || !geometryPS || !lightingVS || !lightingPS)
+		return false;
+
+	if (!tessellationVS || !tessellationHS || !tessellationDS || !tessellationPS)
 		return false;
 
 	return true;
@@ -259,6 +271,89 @@ bool RenderingSystem::CreateGeometryPass(ID3D12Device* device)
 	psoDesc.SampleDesc.Count = 1;
 
 	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&geometryPSO))))
+		return false;
+
+	return true;
+}
+
+bool RenderingSystem::CreateTessellationPass(ID3D12Device* device)
+{
+	
+	CD3DX12_DESCRIPTOR_RANGE cbvRange(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
+	CD3DX12_DESCRIPTOR_RANGE srvRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+
+	CD3DX12_ROOT_PARAMETER rootParameters[2];
+	rootParameters[0].InitAsDescriptorTable(1, &cbvRange, D3D12_SHADER_VISIBILITY_ALL);
+	rootParameters[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_ALL);
+
+	D3D12_STATIC_SAMPLER_DESC sampler = {};
+	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.MipLODBias = 0;
+	sampler.MaxAnisotropy = 0;
+	sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+	sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+	sampler.MinLOD = 0.0f;
+	sampler.MaxLOD = D3D12_FLOAT32_MAX;
+	sampler.ShaderRegister = 0;
+	sampler.RegisterSpace = 0;
+	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, rootParameters, 1, &sampler,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	ComPtr<ID3DBlob> serializedRootSig;
+	ComPtr<ID3DBlob> errorBlob;
+
+	if (FAILED(D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf())))
+		return false;
+
+	if (FAILED(device->CreateRootSignature(0, serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&tessellationRootSignature))))
+		return false;
+
+	D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+	psoDesc.pRootSignature = tessellationRootSignature.Get();
+	psoDesc.VS.pShaderBytecode = tessellationVS->GetBufferPointer();
+	psoDesc.VS.BytecodeLength = tessellationVS->GetBufferSize();
+	psoDesc.HS.pShaderBytecode = tessellationHS->GetBufferPointer();
+	psoDesc.HS.BytecodeLength = tessellationHS->GetBufferSize();
+	psoDesc.DS.pShaderBytecode = tessellationDS->GetBufferPointer();
+	psoDesc.DS.BytecodeLength = tessellationDS->GetBufferSize();
+	psoDesc.PS.pShaderBytecode = tessellationPS->GetBufferPointer();
+	psoDesc.PS.BytecodeLength = tessellationPS->GetBufferSize();
+	psoDesc.InputLayout.pInputElementDescs = inputLayout;
+	psoDesc.InputLayout.NumElements = _countof(inputLayout);
+	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+	psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	psoDesc.SampleMask = UINT_MAX;
+	psoDesc.NumRenderTargets = 3;
+	psoDesc.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	psoDesc.RTVFormats[1] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	psoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	psoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	psoDesc.SampleDesc.Count = 1;
+
+	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&tessellationPSO))))
+		return false;
+
+	
+	psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
+	psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; 
+
+	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&tessellationWireframePSO))))
 		return false;
 
 	return true;

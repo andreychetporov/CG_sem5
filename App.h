@@ -11,12 +11,16 @@
 #include "Math.h"
 #include "RenderingSystem.h"
 
+
+
 using Microsoft::WRL::ComPtr;
 
 struct Material
 {
 	std::string name;
 	std::string diffuseTexture;
+	std::string displacementTexture;
+	std::string normalTexture;
 	float diffuseColor[3];
 };
 
@@ -44,34 +48,16 @@ struct ObjectConstants
 	float ambientColor[4];
 	float uvScale[2];
 	float uvOffset[2];
-};
-
-struct ShotLight
-{
-	Vec3 Position;
-	Vec3 Direction;
-	Vec3 Color;
-	float Range;
-	float Intensity;
-	float Speed;
-	float Traveled;
-	float TravelLimit;
-	bool Active;
-	bool Stuck;
-
-	ShotLight()
-	{
-		Position = Vec3(0, 0, 0);
-		Direction = Vec3(0, 0, 1);
-		Color = Vec3(1, 1, 1);
-		Range = 15.0f;
-		Intensity = 20.0f;
-		Speed = 18.0f;
-		Traveled = 0.0f;
-		TravelLimit = 60.0f;
-		Active = false;
-		Stuck = false;
-	}
+	float cameraPosition[3];
+	float tessellationFactor;
+	float minTessDistance;
+	float maxTessDistance;
+	float minTessFactor;
+	float maxTessFactor;
+	float time;
+	float waveAmplitude;
+	float waveFrequency;
+	float waveSpeed;
 };
 
 class App
@@ -115,7 +101,6 @@ private:
 	void Render();
 
 	void UpdateCamera(float deltaTime);
-	float RayMeshIntersect(const Vec3& origin, const Vec3& dir) const;
 
 
 private:
@@ -170,6 +155,8 @@ private:
 	UINT8* cbMappedData = nullptr;
 
 	std::vector<ComPtr<ID3D12Resource>> textures;
+	std::vector<ComPtr<ID3D12Resource>> displacementTextures;
+	std::vector<ComPtr<ID3D12Resource>> normalTextures;
 	std::vector<ComPtr<ID3D12Resource>> textureUploadBuffers;
 	std::vector<Submesh> submeshes;
 
@@ -191,9 +178,9 @@ private:
 	float animationSpeed = 0.0f;
 	float uvOffsetAccumulated = 0.0f;
 
-	static const int MAX_SHOT_LIGHTS = 200;
-	std::vector<ShotLight> shotLights;
-	int nextShotSlot;
-	bool spaceWasDown;
+	bool useTessellation = true;
+	float tessellationLevel = 4.0f;
+	bool wireframeMode = false;
 
 };
+

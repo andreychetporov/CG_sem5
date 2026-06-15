@@ -54,7 +54,7 @@ float3 CalculateDirectionalLight(Light light, float3 normal, float3 viewDir, flo
     float spec = pow(max(dot(viewDir, reflectDir), 0.0f), 32.0f);
 
     float3 diffuse = light.color * diff * light.intensity;
-    float3 specular = light.color * spec * light.intensity * 0.5f;
+    float3 specular = light.color * spec * light.intensity * 0.3f;
 
     return (diffuse + specular) * albedo;
 }
@@ -135,7 +135,8 @@ float4 PSMain(VertexOutput input) : SV_TARGET
 
     float3 viewDir = normalize(cameraPosition - worldPos);
 
-    float3 ambient = float3(0.2f, 0.2f, 0.25f) * albedo.rgb;
+    
+    float3 ambient = float3(0.15f, 0.18f, 0.22f) * albedo.rgb;
     float3 lighting = ambient;
 
     for (int i = 0; i < numLights; i++)
