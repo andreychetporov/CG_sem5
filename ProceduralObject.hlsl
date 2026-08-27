@@ -46,7 +46,8 @@ PixelOutput PSMain(VertexOutput input)
     PixelOutput output;
 
     output.position = float4(input.worldPos, 1.0f);
-    output.normal = float4(normalize(input.normal), 1.0f);
+    // color.a is a material marker. Values above 1 identify the HDR test source.
+    output.normal = float4(normalize(input.normal), input.color.a);
 
     // Простое освещение для отладки
     float3 lightDir = normalize(float3(0.3, -0.8, 0.5));

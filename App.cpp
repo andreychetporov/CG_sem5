@@ -689,13 +689,15 @@ void App::Update()
 	const auto& visibleIndices = renderingSystem.GetVisibleIndices();
 	const auto& sceneObjects = renderingSystem.GetSceneObjects();
 	wchar_t title[256];
-	swprintf_s(title, L"CG Lab | Visible: %d/%d | Frustum: %s | Octree: %s | Shadows: %s | PCF: %s | Cam: (%.1f, %.1f, %.1f)",
+	swprintf_s(title, L"CG Lab | Visible: %d/%d | Frustum: %s | Octree: %s | Shadows: %s | PCF: %s | Eye Adapt: %s | Test Light: %s | Cam: (%.1f, %.1f, %.1f)",
 		(int)visibleIndices.size(),
 		(int)sceneObjects.size(),
 		renderingSystem.GetFrustumCulling() ? L"ON" : L"OFF",
 		renderingSystem.GetOctreeEnabled() ? L"ON" : L"OFF",
 		renderingSystem.GetShadowsEnabled() ? L"ON" : L"OFF",
 		renderingSystem.GetPCFEnabled() ? L"ON" : L"OFF",
+		renderingSystem.GetEyeAdaptationEnabled() ? L"ON" : L"OFF",
+		renderingSystem.GetEyeAdaptationTestEnabled() ? L"ON" : L"OFF",
 		camera.position.x, camera.position.y, camera.position.z);
 	SetWindowText(_hwnd, title);
 }
@@ -826,7 +828,7 @@ void App::Render()
 		float dz = obj.position.z - camPos.z;
 		float distanceSquared = dx * dx + dy * dy + dz * dz;
 
-		if (distanceSquared < LOD_DISTANCE_THRESHOLD * LOD_DISTANCE_THRESHOLD)
+		if (obj.color.w > 1.5f || distanceSquared < LOD_DISTANCE_THRESHOLD * LOD_DISTANCE_THRESHOLD)
 			nearObjects.push_back(idx);
 		else
 			farObjects.push_back(idx);
@@ -1005,7 +1007,8 @@ void App::Render()
 	renderingSystem.RenderParticles(commandList.Get(), viewProj, particleRight, particleUp);
 	renderingSystem.EndGeometryPass(commandList.Get());
 	renderingSystem.UpdateLights(commandList.Get());
-	renderingSystem.RenderLightingPass(commandList.Get(), swapChainBuffers[backBufferIndex].Get(), rtv);
+	renderingSystem.RenderLightingPass(commandList.Get());
+	renderingSystem.RenderPostProcessing(commandList.Get(), swapChainBuffers[backBufferIndex].Get(), rtv, 0.016f);
 	commandList->Close();
 	ID3D12CommandList* lists[] = { commandList.Get() };
 	commandQueue->ExecuteCommandLists(1, lists);
@@ -1035,6 +1038,18 @@ void App::OnKeyDown(WPARAM key)
 	if (key == VK_F4)
 	{
 		renderingSystem.SetPCFEnabled(!renderingSystem.GetPCFEnabled());
+	}
+	if (key == VK_F5)
+	{
+		renderingSystem.ToggleDepthOfField();
+	}
+	if (key == VK_F6)
+	{
+		renderingSystem.ToggleEyeAdaptation();
+	}
+	if (key == VK_F7)
+	{
+		renderingSystem.ToggleEyeAdaptationTest();
 	}
 }
 void App::OnKeyUp(WPARAM key)
@@ -1079,6 +1094,10 @@ void App::UpdateCamera(float deltaTime)
 	if (keys['Q']) animationSpeed -= 1.5f * deltaTime;
 	if (keys[VK_SPACE]) camera.position.y += moveSpeed;
 	if (keys[VK_SHIFT]) camera.position.y -= moveSpeed;
+	if (keys['Z']) renderingSystem.AdjustFocusDistance(-8.0f * deltaTime);
+	if (keys['X']) renderingSystem.AdjustFocusDistance(8.0f * deltaTime);
+	if (keys['C']) renderingSystem.AdjustFocusRange(-5.0f * deltaTime);
+	if (keys['V']) renderingSystem.AdjustFocusRange(5.0f * deltaTime);
 	camera.target.x = camera.position.x + sinf(cameraYaw) * cosf(cameraPitch);
 	camera.target.y = camera.position.y + sinf(cameraPitch);
 	camera.target.z = camera.position.z + cosf(cameraYaw) * cosf(cameraPitch);

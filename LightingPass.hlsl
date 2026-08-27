@@ -34,6 +34,12 @@ cbuffer LightingConstants : register(b0)
     float3 cameraForward;
     float padding2;
     float4x4 cascadeViewProj[4];
+    float3 testLightPosition;
+    float testLightEnabled;
+    float3 testLightColor;
+    float testLightIntensity;
+    float testLightRange;
+    float3 testLightPadding;
 }
 
 StructuredBuffer<Light> lights : register(t0);
@@ -198,6 +204,10 @@ float4 PSMain(VertexOutput input) : SV_TARGET
         return float4(albedo.rgb * cascadeColors[cascadeIndex], 1.0f);
     }
 
+    float testSourceMask = step(1.5f, normalData.w);
+    if (testLightEnabled > 0.5f && testSourceMask > 0.5f)
+        return float4(testLightColor * testLightIntensity, 1.0f);
+
     
     float particleMask = saturate(1.0f - normalData.w);
     float3 ambient = float3(0.28f, 0.30f, 0.34f) * albedo.rgb;
@@ -233,6 +243,17 @@ float4 PSMain(VertexOutput input) : SV_TARGET
         {
             lighting += CalculateSpotLight(light, worldPos, normal, viewDir, albedo.rgb);
         }
+    }
+
+    if (testLightEnabled > 0.5f)
+    {
+        Light testLight = (Light)0;
+        testLight.position = testLightPosition;
+        testLight.type = 1.0f;
+        testLight.range = testLightRange;
+        testLight.color = testLightColor;
+        testLight.intensity = testLightIntensity;
+        lighting += CalculatePointLight(testLight, worldPos, normal, viewDir, albedo.rgb);
     }
 
     return float4(lighting, 1.0f);

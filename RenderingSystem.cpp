@@ -24,6 +24,22 @@ RenderingSystem::RenderingSystem()
 	particleDescriptorSize = 0;
 	particleBufferIsSRV[0] = false;
 	particleBufferIsSRV[1] = false;
+	eyeAdaptationMapped = nullptr;
+	postProcessMapped = nullptr;
+	postProcessDescriptorSize = 0;
+	luminanceTileCountX = 0;
+	luminanceTileCountY = 0;
+	hdrColorIsRenderTarget = true;
+	adaptedLuminanceIsSRV = false;
+	resetEyeAdaptation = true;
+	depthOfFieldEnabled = true;
+	eyeAdaptationEnabled = true;
+	eyeAdaptationTestEnabled = false;
+	focusDistance = 20.0f;
+	focusRange = 8.0f;
+	maxBlurRadius = 9.0f;
+	manualExposure = 1.0f;
+	exposureKey = 0.55f;
 	cascadeRadiiInitialized = false;
 	for (UINT cascade = 0; cascade < CASCADE_COUNT; ++cascade)
 		stableCascadeRadii[cascade] = 0.0f;
@@ -48,6 +64,14 @@ RenderingSystem::~RenderingSystem()
 	{
 		particleRenderCB->Unmap(0, nullptr);
 	}
+	if (eyeAdaptationCB && eyeAdaptationMapped)
+	{
+		eyeAdaptationCB->Unmap(0, nullptr);
+	}
+	if (postProcessCB && postProcessMapped)
+	{
+		postProcessCB->Unmap(0, nullptr);
+	}
 }
 bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* commandQueue, UINT width, UINT height)
 {
@@ -70,6 +94,8 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 	if (!CreateBillboardPass(device))
 		return false;
 	if (!CreateLightingPass(device))
+		return false;
+	if (!CreatePostProcessing(device))
 		return false;
 	if (!CreateParticleSystem(device, commandQueue))
 		return false;
@@ -205,6 +231,10 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	particleVS = CompileShader(L"ParticlePass.hlsl", "VSMain", "vs_5_0");
 	particleGS = CompileShader(L"ParticlePass.hlsl", "GSMain", "gs_5_0");
 	particlePS = CompileShader(L"ParticlePass.hlsl", "PSMain", "ps_5_0");
+	eyeReduceCS = CompileShader(L"EyeAdaptation.hlsl", "CSReduceTiles", "cs_5_0");
+	eyeAdaptCS = CompileShader(L"EyeAdaptation.hlsl", "CSAdapt", "cs_5_0");
+	postProcessVS = CompileShader(L"PostProcess.hlsl", "VSMain", "vs_5_0");
+	postProcessPS = CompileShader(L"PostProcess.hlsl", "PSMain", "ps_5_0");
 	if (!geometryVS || !geometryPS || !lightingVS || !lightingPS)
 		return false;
 	if (!proceduralVS || !proceduralPS)
@@ -216,6 +246,8 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	if (!shadowVS)
 		return false;
 	if (!particleCS || !particleVS || !particleGS || !particlePS)
+		return false;
+	if (!eyeReduceCS || !eyeAdaptCS || !postProcessVS || !postProcessPS)
 		return false;
 	return true;
 }
@@ -456,10 +488,216 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 	psoDesc.DepthStencilState = dsDesc;
 	psoDesc.SampleMask = UINT_MAX;
 	psoDesc.NumRenderTargets = 1;
-	psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	psoDesc.SampleDesc.Count = 1;
 	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&lightingPSO))))
 		return false;
+	return true;
+}
+bool RenderingSystem::CreatePostProcessing(ID3D12Device* device)
+{
+	D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {};
+	descriptorHeapDesc.NumDescriptors = 5;
+	descriptorHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	descriptorHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	if (FAILED(device->CreateDescriptorHeap(&descriptorHeapDesc,
+		IID_PPV_ARGS(&postProcessDescriptorHeap))))
+		return false;
+	postProcessDescriptorSize = device->GetDescriptorHandleIncrementSize(
+		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+	D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+	rtvHeapDesc.NumDescriptors = 1;
+	rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+	if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&hdrRTVHeap))))
+		return false;
+
+	D3D12_HEAP_PROPERTIES uploadHeap = {};
+	uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+	D3D12_RESOURCE_DESC constantBufferDesc = {};
+	constantBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	constantBufferDesc.Width = 256;
+	constantBufferDesc.Height = 1;
+	constantBufferDesc.DepthOrArraySize = 1;
+	constantBufferDesc.MipLevels = 1;
+	constantBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+	constantBufferDesc.SampleDesc.Count = 1;
+	constantBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE,
+		&constantBufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+		IID_PPV_ARGS(&eyeAdaptationCB))))
+		return false;
+	if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE,
+		&constantBufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+		IID_PPV_ARGS(&postProcessCB))))
+		return false;
+	D3D12_RANGE noRead = { 0, 0 };
+	if (FAILED(eyeAdaptationCB->Map(0, &noRead,
+		reinterpret_cast<void**>(&eyeAdaptationMapped))))
+		return false;
+	if (FAILED(postProcessCB->Map(0, &noRead,
+		reinterpret_cast<void**>(&postProcessMapped))))
+		return false;
+
+	CD3DX12_DESCRIPTOR_RANGE eyeSrvRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+	CD3DX12_DESCRIPTOR_RANGE tileUavRange(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+	CD3DX12_DESCRIPTOR_RANGE adaptedUavRange(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1);
+	CD3DX12_ROOT_PARAMETER eyeParameters[4];
+	eyeParameters[0].InitAsDescriptorTable(1, &eyeSrvRange);
+	eyeParameters[1].InitAsDescriptorTable(1, &tileUavRange);
+	eyeParameters[2].InitAsDescriptorTable(1, &adaptedUavRange);
+	eyeParameters[3].InitAsConstantBufferView(0);
+	CD3DX12_ROOT_SIGNATURE_DESC eyeRootDesc(_countof(eyeParameters), eyeParameters);
+	ComPtr<ID3DBlob> serialized;
+	ComPtr<ID3DBlob> errors;
+	if (FAILED(D3D12SerializeRootSignature(&eyeRootDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serialized.GetAddressOf(), errors.GetAddressOf())))
+		return false;
+	if (FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(),
+		serialized->GetBufferSize(), IID_PPV_ARGS(&eyeAdaptationRootSignature))))
+		return false;
+
+	D3D12_COMPUTE_PIPELINE_STATE_DESC computeDesc = {};
+	computeDesc.pRootSignature = eyeAdaptationRootSignature.Get();
+	computeDesc.CS = { eyeReduceCS->GetBufferPointer(), eyeReduceCS->GetBufferSize() };
+	if (FAILED(device->CreateComputePipelineState(&computeDesc, IID_PPV_ARGS(&eyeReducePSO))))
+		return false;
+	computeDesc.CS = { eyeAdaptCS->GetBufferPointer(), eyeAdaptCS->GetBufferSize() };
+	if (FAILED(device->CreateComputePipelineState(&computeDesc, IID_PPV_ARGS(&eyeAdaptPSO))))
+		return false;
+
+	CD3DX12_DESCRIPTOR_RANGE postSrvRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+	CD3DX12_ROOT_PARAMETER postParameters[2];
+	postParameters[0].InitAsDescriptorTable(1, &postSrvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+	postParameters[1].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+	D3D12_STATIC_SAMPLER_DESC linearSampler = {};
+	linearSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	linearSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	linearSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	linearSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	linearSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+	linearSampler.MinLOD = 0.0f;
+	linearSampler.MaxLOD = D3D12_FLOAT32_MAX;
+	linearSampler.ShaderRegister = 0;
+	linearSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	CD3DX12_ROOT_SIGNATURE_DESC postRootDesc(_countof(postParameters), postParameters,
+		1, &linearSampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+	serialized.Reset();
+	errors.Reset();
+	if (FAILED(D3D12SerializeRootSignature(&postRootDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serialized.GetAddressOf(), errors.GetAddressOf())))
+		return false;
+	if (FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(),
+		serialized->GetBufferSize(), IID_PPV_ARGS(&postProcessRootSignature))))
+		return false;
+
+	D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+			D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12,
+			D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC postDesc = {};
+	postDesc.pRootSignature = postProcessRootSignature.Get();
+	postDesc.VS = { postProcessVS->GetBufferPointer(), postProcessVS->GetBufferSize() };
+	postDesc.PS = { postProcessPS->GetBufferPointer(), postProcessPS->GetBufferSize() };
+	postDesc.InputLayout = { inputLayout, _countof(inputLayout) };
+	postDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	postDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	postDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	postDesc.DepthStencilState.DepthEnable = FALSE;
+	postDesc.DepthStencilState.StencilEnable = FALSE;
+	postDesc.SampleMask = UINT_MAX;
+	postDesc.NumRenderTargets = 1;
+	postDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	postDesc.SampleDesc.Count = 1;
+	if (FAILED(device->CreateGraphicsPipelineState(&postDesc, IID_PPV_ARGS(&postProcessPSO))))
+		return false;
+
+	return CreatePostProcessTargets(device, width, height);
+}
+bool RenderingSystem::CreatePostProcessTargets(ID3D12Device* device, UINT targetWidth, UINT targetHeight)
+{
+	hdrColorBuffer.Reset();
+	luminanceTiles.Reset();
+	adaptedLuminance.Reset();
+	luminanceTileCountX = (targetWidth + 15) / 16;
+	luminanceTileCountY = (targetHeight + 15) / 16;
+
+	D3D12_HEAP_PROPERTIES defaultHeap = {};
+	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC textureDesc = {};
+	textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	textureDesc.Width = targetWidth;
+	textureDesc.Height = targetHeight;
+	textureDesc.DepthOrArraySize = 1;
+	textureDesc.MipLevels = 1;
+	textureDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	textureDesc.SampleDesc.Count = 1;
+	textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	D3D12_CLEAR_VALUE hdrClear = {};
+	hdrClear.Format = textureDesc.Format;
+	hdrClear.Color[3] = 1.0f;
+	if (FAILED(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
+		&textureDesc, D3D12_RESOURCE_STATE_RENDER_TARGET, &hdrClear,
+		IID_PPV_ARGS(&hdrColorBuffer))))
+		return false;
+	device->CreateRenderTargetView(hdrColorBuffer.Get(), nullptr,
+		hdrRTVHeap->GetCPUDescriptorHandleForHeapStart());
+
+	D3D12_RESOURCE_DESC bufferDesc = {};
+	bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bufferDesc.Width = sizeof(float) * luminanceTileCountX * luminanceTileCountY;
+	bufferDesc.Height = 1;
+	bufferDesc.DepthOrArraySize = 1;
+	bufferDesc.MipLevels = 1;
+	bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+	bufferDesc.SampleDesc.Count = 1;
+	bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	bufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	if (FAILED(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
+		&bufferDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+		IID_PPV_ARGS(&luminanceTiles))))
+		return false;
+	bufferDesc.Width = sizeof(float);
+	if (FAILED(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
+		&bufferDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+		IID_PPV_ARGS(&adaptedLuminance))))
+		return false;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE handle =
+		postProcessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+	D3D12_SHADER_RESOURCE_VIEW_DESC textureSrv = {};
+	textureSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	textureSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	textureSrv.Texture2D.MipLevels = 1;
+	textureSrv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	device->CreateShaderResourceView(hdrColorBuffer.Get(), &textureSrv, handle);
+	handle.ptr += postProcessDescriptorSize;
+	textureSrv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	device->CreateShaderResourceView(gBuffer.GetPositionBuffer(), &textureSrv, handle);
+	handle.ptr += postProcessDescriptorSize;
+	D3D12_SHADER_RESOURCE_VIEW_DESC bufferSrv = {};
+	bufferSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	bufferSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	bufferSrv.Format = DXGI_FORMAT_UNKNOWN;
+	bufferSrv.Buffer.NumElements = 1;
+	bufferSrv.Buffer.StructureByteStride = sizeof(float);
+	device->CreateShaderResourceView(adaptedLuminance.Get(), &bufferSrv, handle);
+	handle.ptr += postProcessDescriptorSize;
+	D3D12_UNORDERED_ACCESS_VIEW_DESC bufferUav = {};
+	bufferUav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+	bufferUav.Format = DXGI_FORMAT_UNKNOWN;
+	bufferUav.Buffer.NumElements = luminanceTileCountX * luminanceTileCountY;
+	bufferUav.Buffer.StructureByteStride = sizeof(float);
+	device->CreateUnorderedAccessView(luminanceTiles.Get(), nullptr, &bufferUav, handle);
+	handle.ptr += postProcessDescriptorSize;
+	bufferUav.Buffer.NumElements = 1;
+	device->CreateUnorderedAccessView(adaptedLuminance.Get(), nullptr, &bufferUav, handle);
+
+	hdrColorIsRenderTarget = true;
+	adaptedLuminanceIsSRV = false;
+	resetEyeAdaptation = true;
 	return true;
 }
 bool RenderingSystem::CreateParticleSystem(ID3D12Device* device, ID3D12CommandQueue* commandQueue)
@@ -925,15 +1163,24 @@ void RenderingSystem::EndGeometryPass(ID3D12GraphicsCommandList* commandList)
 {
 	gBuffer.TransitionToShaderResource(commandList);
 }
-void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList,
-	ID3D12Resource* backBuffer, D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV)
+void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList)
 {
-	D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(backBuffer,
-		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-	commandList->ResourceBarrier(1, &barrier);
+	if (!hdrColorIsRenderTarget)
+	{
+		auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(hdrColorBuffer.Get(),
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+			D3D12_RESOURCE_STATE_RENDER_TARGET);
+		commandList->ResourceBarrier(1, &barrier);
+		hdrColorIsRenderTarget = true;
+	}
+	D3D12_VIEWPORT postViewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
+	D3D12_RECT postScissor = { 0, 0, (LONG)width, (LONG)height };
+	commandList->RSSetViewports(1, &postViewport);
+	commandList->RSSetScissorRects(1, &postScissor);
 	const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-	commandList->ClearRenderTargetView(backBufferRTV, clearColor, 0, nullptr);
-	commandList->OMSetRenderTargets(1, &backBufferRTV, FALSE, nullptr);
+	D3D12_CPU_DESCRIPTOR_HANDLE hdrRTV = hdrRTVHeap->GetCPUDescriptorHandleForHeapStart();
+	commandList->ClearRenderTargetView(hdrRTV, clearColor, 0, nullptr);
+	commandList->OMSetRenderTargets(1, &hdrRTV, FALSE, nullptr);
 	commandList->SetGraphicsRootSignature(lightingRootSignature.Get());
 	commandList->SetPipelineState(lightingPSO.Get());
 	ID3D12DescriptorHeap* heaps[] = { lightingCBHeap.Get() };
@@ -949,9 +1196,127 @@ void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList,
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	commandList->IASetVertexBuffers(0, 1, &fullscreenQuadVBView);
 	commandList->DrawInstanced(4, 1, 0, 0);
-	barrier = CD3DX12_RESOURCE_BARRIER::Transition(backBuffer,
-		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+	auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(hdrColorBuffer.Get(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	commandList->ResourceBarrier(1, &barrier);
+	hdrColorIsRenderTarget = false;
+}
+void RenderingSystem::RenderPostProcessing(ID3D12GraphicsCommandList* commandList,
+	ID3D12Resource* backBuffer, D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV, float deltaTime)
+{
+	struct EyeConstants
+	{
+		UINT imageWidth;
+		UINT imageHeight;
+		UINT tileCountX;
+		UINT tileCount;
+		float deltaTime;
+		float brightenSpeed;
+		float darkenSpeed;
+		UINT resetAdaptation;
+	};
+	EyeConstants eyeConstants = {};
+	eyeConstants.imageWidth = width;
+	eyeConstants.imageHeight = height;
+	eyeConstants.tileCountX = luminanceTileCountX;
+	eyeConstants.tileCount = luminanceTileCountX * luminanceTileCountY;
+	eyeConstants.deltaTime = deltaTime;
+	// Slow enough that the transition is visible for several seconds.
+	eyeConstants.brightenSpeed = 0.65f;
+	eyeConstants.darkenSpeed = 0.30f;
+	eyeConstants.resetAdaptation = resetEyeAdaptation ? 1u : 0u;
+	memcpy(eyeAdaptationMapped, &eyeConstants, sizeof(eyeConstants));
+
+	if (adaptedLuminanceIsSRV)
+	{
+		auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(adaptedLuminance.Get(),
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		commandList->ResourceBarrier(1, &barrier);
+		adaptedLuminanceIsSRV = false;
+	}
+	ID3D12DescriptorHeap* postHeaps[] = { postProcessDescriptorHeap.Get() };
+	commandList->SetDescriptorHeaps(1, postHeaps);
+	commandList->SetComputeRootSignature(eyeAdaptationRootSignature.Get());
+	CD3DX12_GPU_DESCRIPTOR_HANDLE hdrHandle(
+		postProcessDescriptorHeap->GetGPUDescriptorHandleForHeapStart(), 0, postProcessDescriptorSize);
+	CD3DX12_GPU_DESCRIPTOR_HANDLE tilesUavHandle(
+		postProcessDescriptorHeap->GetGPUDescriptorHandleForHeapStart(), 3, postProcessDescriptorSize);
+	CD3DX12_GPU_DESCRIPTOR_HANDLE adaptedUavHandle(
+		postProcessDescriptorHeap->GetGPUDescriptorHandleForHeapStart(), 4, postProcessDescriptorSize);
+	commandList->SetComputeRootDescriptorTable(0, hdrHandle);
+	commandList->SetComputeRootDescriptorTable(1, tilesUavHandle);
+	commandList->SetComputeRootDescriptorTable(2, adaptedUavHandle);
+	commandList->SetComputeRootConstantBufferView(3, eyeAdaptationCB->GetGPUVirtualAddress());
+	commandList->SetPipelineState(eyeReducePSO.Get());
+	commandList->Dispatch(luminanceTileCountX, luminanceTileCountY, 1);
+	auto tileBarrier = CD3DX12_RESOURCE_BARRIER::UAV(luminanceTiles.Get());
+	commandList->ResourceBarrier(1, &tileBarrier);
+	commandList->SetPipelineState(eyeAdaptPSO.Get());
+	commandList->Dispatch(1, 1, 1);
+	auto adaptedBarrier = CD3DX12_RESOURCE_BARRIER::UAV(adaptedLuminance.Get());
+	commandList->ResourceBarrier(1, &adaptedBarrier);
+	auto adaptedToSRV = CD3DX12_RESOURCE_BARRIER::Transition(adaptedLuminance.Get(),
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	commandList->ResourceBarrier(1, &adaptedToSRV);
+	adaptedLuminanceIsSRV = true;
+	resetEyeAdaptation = false;
+
+	struct PostConstants
+	{
+		float cameraPosition[3];
+		float focusDistance;
+		float cameraForward[3];
+		float focusRange;
+		float inverseResolution[2];
+		float maxBlurRadius;
+		float manualExposure;
+		int depthOfFieldEnabled;
+		int eyeAdaptationEnabled;
+		float exposureKey;
+		float gamma;
+	};
+	PostConstants postConstants = {};
+	postConstants.cameraPosition[0] = cameraPosition[0];
+	postConstants.cameraPosition[1] = cameraPosition[1];
+	postConstants.cameraPosition[2] = cameraPosition[2];
+	postConstants.focusDistance = focusDistance;
+	postConstants.cameraForward[0] = cameraForward[0];
+	postConstants.cameraForward[1] = cameraForward[1];
+	postConstants.cameraForward[2] = cameraForward[2];
+	postConstants.focusRange = focusRange;
+	postConstants.inverseResolution[0] = 1.0f / (float)width;
+	postConstants.inverseResolution[1] = 1.0f / (float)height;
+	postConstants.maxBlurRadius = maxBlurRadius;
+	postConstants.manualExposure = manualExposure;
+	postConstants.depthOfFieldEnabled = depthOfFieldEnabled ? 1 : 0;
+	postConstants.eyeAdaptationEnabled = eyeAdaptationEnabled ? 1 : 0;
+	postConstants.exposureKey = exposureKey;
+	postConstants.gamma = 2.2f;
+	memcpy(postProcessMapped, &postConstants, sizeof(postConstants));
+
+	auto backBufferToRTV = CD3DX12_RESOURCE_BARRIER::Transition(backBuffer,
+		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+	commandList->ResourceBarrier(1, &backBufferToRTV);
+	const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+	commandList->ClearRenderTargetView(backBufferRTV, clearColor, 0, nullptr);
+	commandList->OMSetRenderTargets(1, &backBufferRTV, FALSE, nullptr);
+	D3D12_VIEWPORT postViewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
+	D3D12_RECT postScissor = { 0, 0, (LONG)width, (LONG)height };
+	commandList->RSSetViewports(1, &postViewport);
+	commandList->RSSetScissorRects(1, &postScissor);
+	commandList->SetGraphicsRootSignature(postProcessRootSignature.Get());
+	commandList->SetPipelineState(postProcessPSO.Get());
+	commandList->SetDescriptorHeaps(1, postHeaps);
+	commandList->SetGraphicsRootDescriptorTable(0,
+		postProcessDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+	commandList->SetGraphicsRootConstantBufferView(1, postProcessCB->GetGPUVirtualAddress());
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+	commandList->IASetVertexBuffers(0, 1, &fullscreenQuadVBView);
+	commandList->DrawInstanced(4, 1, 0, 0);
+	auto backBufferToPresent = CD3DX12_RESOURCE_BARRIER::Transition(backBuffer,
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+	commandList->ResourceBarrier(1, &backBufferToPresent);
 }
 void RenderingSystem::AddLight(const Light& light)
 {
@@ -987,6 +1352,18 @@ void RenderingSystem::UpdateLights(ID3D12GraphicsCommandList* commandList)
 	constants.cameraForward[1] = cameraForward[1];
 	constants.cameraForward[2] = cameraForward[2];
 	constants.padding2 = 0.0f;
+	constants.testLightPosition[0] = 0.0f;
+	constants.testLightPosition[1] = 4.0f;
+	constants.testLightPosition[2] = 0.0f;
+	constants.testLightEnabled = eyeAdaptationTestEnabled ? 1.0f : 0.0f;
+	constants.testLightColor[0] = 1.0f;
+	constants.testLightColor[1] = 0.58f;
+	constants.testLightColor[2] = 0.18f;
+	constants.testLightIntensity = 45.0f;
+	constants.testLightRange = 30.0f;
+	constants.testLightPadding[0] = 0.0f;
+	constants.testLightPadding[1] = 0.0f;
+	constants.testLightPadding[2] = 0.0f;
 	memcpy(lightingCBMapped, &constants, sizeof(LightingConstants));
 }
 void RenderingSystem::SetCameraPosition(float x, float y, float z)
@@ -995,11 +1372,18 @@ void RenderingSystem::SetCameraPosition(float x, float y, float z)
 	cameraPosition[1] = y;
 	cameraPosition[2] = z;
 }
+void RenderingSystem::ToggleEyeAdaptationTest()
+{
+	eyeAdaptationTestEnabled = !eyeAdaptationTestEnabled;
+	if (eyeAdaptationTestEnabled)
+		eyeAdaptationEnabled = true;
+}
 void RenderingSystem::Resize(ID3D12Device* device, UINT width, UINT height)
 {
 	this->width = width;
 	this->height = height;
 	gBuffer.Resize(device, width, height);
+	CreatePostProcessTargets(device, width, height);
 }
 bool RenderingSystem::InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount)
 {
@@ -1020,6 +1404,19 @@ bool RenderingSystem::InitializeScene(ID3D12Device* device, UINT cubeCount, UINT
 		DirectX::XMMatrixTranslation(0.0f, 0.75f, 0.0f);
 	centerCube.worldBounds = Scene::TransformAabb(centerCube.localBounds, centerWorld);
 	sceneObjects.push_back(centerCube);
+	Scene::ProceduralMesh testSourceMesh;
+	Scene::BuildUvSphere(testSourceMesh, 12, 18, 0.5f);
+	Scene::SceneObject testSource;
+	testSource.kind = Scene::PrimitiveKind::Sphere;
+	testSource.position = DirectX::XMFLOAT3(0.0f, 4.0f, 0.0f);
+	testSource.uniformScale = 1.6f;
+	// Alpha above one is stored in normal.w as the HDR source material marker.
+	testSource.color = DirectX::XMFLOAT4(1.0f, 0.58f, 0.18f, 2.0f);
+	testSource.localBounds = testSourceMesh.localBounds;
+	DirectX::XMMATRIX testSourceWorld = DirectX::XMMatrixScaling(1.6f, 1.6f, 1.6f) *
+		DirectX::XMMatrixTranslation(0.0f, 4.0f, 0.0f);
+	testSource.worldBounds = Scene::TransformAabb(testSource.localBounds, testSourceWorld);
+	sceneObjects.push_back(testSource);
 	Scene::ProceduralMesh cubeMesh, sphereMesh;
 	Scene::BuildUnitCube(cubeMesh);
 	Scene::BuildUvSphere(sphereMesh, 12, 18, 0.5f);

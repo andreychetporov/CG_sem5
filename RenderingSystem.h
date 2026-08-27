@@ -3,6 +3,7 @@
 #include <d3d12.h>
 #include <wrl.h>
 #include <vector>
+#include <algorithm>
 #include "d3dx12.h"
 #include "GBuffer.h"
 #include "SceneCulling.h"
@@ -37,6 +38,12 @@ struct LightingConstants
 	float cameraForward[3];
 	float padding2;
 	float cascadeViewProj[4][16];
+	float testLightPosition[3];
+	float testLightEnabled;
+	float testLightColor[3];
+	float testLightIntensity;
+	float testLightRange;
+	float testLightPadding[3];
 };
 class RenderingSystem
 {
@@ -47,7 +54,9 @@ public:
 	void Resize(ID3D12Device* device, UINT width, UINT height);
 	void BeginGeometryPass(ID3D12GraphicsCommandList* commandList);
 	void EndGeometryPass(ID3D12GraphicsCommandList* commandList);
-	void RenderLightingPass(ID3D12GraphicsCommandList* commandList, ID3D12Resource* backBuffer, D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV);
+	void RenderLightingPass(ID3D12GraphicsCommandList* commandList);
+	void RenderPostProcessing(ID3D12GraphicsCommandList* commandList, ID3D12Resource* backBuffer,
+		D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV, float deltaTime);
 	void AddLight(const Light& light);
 	void ClearLights();
 	void UpdateLights(ID3D12GraphicsCommandList* commandList);
@@ -77,6 +86,14 @@ public:
 	bool GetPCFEnabled() const { return pcfEnabled; }
 	void SetCameraPosition(float x, float y, float z);
 	void SetDebugMode(float mode) { debugMode = mode; }
+	void ToggleDepthOfField() { depthOfFieldEnabled = !depthOfFieldEnabled; }
+	void ToggleEyeAdaptation() { eyeAdaptationEnabled = !eyeAdaptationEnabled; }
+	void ToggleEyeAdaptationTest();
+	void AdjustFocusDistance(float amount) { focusDistance = (std::max)(0.5f, focusDistance + amount); }
+	void AdjustFocusRange(float amount) { focusRange = (std::max)(0.5f, focusRange + amount); }
+	bool GetDepthOfFieldEnabled() const { return depthOfFieldEnabled; }
+	bool GetEyeAdaptationEnabled() const { return eyeAdaptationEnabled; }
+	bool GetEyeAdaptationTestEnabled() const { return eyeAdaptationTestEnabled; }
 	GBuffer* GetGBuffer() { return &gBuffer; }
 	bool InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount);
 	void BuildOctree();
@@ -104,6 +121,8 @@ private:
 	bool CreateTessellationPass(ID3D12Device* device);
 	bool CreateBillboardPass(ID3D12Device* device);
 	bool CreateLightingPass(ID3D12Device* device);
+	bool CreatePostProcessing(ID3D12Device* device);
+	bool CreatePostProcessTargets(ID3D12Device* device, UINT width, UINT height);
 	bool CreateShadowPass(ID3D12Device* device);
 	bool CreateShadowResources(ID3D12Device* device);
 	bool CreateParticleSystem(ID3D12Device* device, ID3D12CommandQueue* commandQueue);
@@ -142,6 +161,10 @@ private:
 	ComPtr<ID3DBlob> particleVS;
 	ComPtr<ID3DBlob> particleGS;
 	ComPtr<ID3DBlob> particlePS;
+	ComPtr<ID3DBlob> eyeReduceCS;
+	ComPtr<ID3DBlob> eyeAdaptCS;
+	ComPtr<ID3DBlob> postProcessVS;
+	ComPtr<ID3DBlob> postProcessPS;
 	std::vector<Light> lights;
 	ComPtr<ID3D12Resource> lightBuffer;
 	ComPtr<ID3D12DescriptorHeap> lightBufferHeap;
@@ -165,6 +188,34 @@ private:
 	bool shadowMapInDepthWriteState;
 	bool shadowsEnabled;
 	bool pcfEnabled;
+	ComPtr<ID3D12Resource> hdrColorBuffer;
+	ComPtr<ID3D12DescriptorHeap> hdrRTVHeap;
+	ComPtr<ID3D12Resource> luminanceTiles;
+	ComPtr<ID3D12Resource> adaptedLuminance;
+	ComPtr<ID3D12DescriptorHeap> postProcessDescriptorHeap;
+	ComPtr<ID3D12RootSignature> eyeAdaptationRootSignature;
+	ComPtr<ID3D12PipelineState> eyeReducePSO;
+	ComPtr<ID3D12PipelineState> eyeAdaptPSO;
+	ComPtr<ID3D12RootSignature> postProcessRootSignature;
+	ComPtr<ID3D12PipelineState> postProcessPSO;
+	ComPtr<ID3D12Resource> eyeAdaptationCB;
+	ComPtr<ID3D12Resource> postProcessCB;
+	UINT8* eyeAdaptationMapped;
+	UINT8* postProcessMapped;
+	UINT postProcessDescriptorSize;
+	UINT luminanceTileCountX;
+	UINT luminanceTileCountY;
+	bool hdrColorIsRenderTarget;
+	bool adaptedLuminanceIsSRV;
+	bool resetEyeAdaptation;
+	bool depthOfFieldEnabled;
+	bool eyeAdaptationEnabled;
+	bool eyeAdaptationTestEnabled;
+	float focusDistance;
+	float focusRange;
+	float maxBlurRadius;
+	float manualExposure;
+	float exposureKey;
 	static const UINT PARTICLE_COUNT = 1024;
 	ComPtr<ID3D12RootSignature> particleComputeRootSignature;
 	ComPtr<ID3D12PipelineState> particleComputePSO;
