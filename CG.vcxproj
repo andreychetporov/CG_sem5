@@ -157,6 +157,12 @@
 	<None Include="ShadowPass.hlsl">
 	  <FileType>Document</FileType>
 	</None>
+	<None Include="ParticleUpdate.hlsl">
+	  <FileType>Document</FileType>
+	</None>
+	<None Include="ParticlePass.hlsl">
+	  <FileType>Document</FileType>
+	</None>
     <None Include="ProceduralObject.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">4.0</ShaderModel>

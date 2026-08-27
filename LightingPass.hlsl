@@ -169,7 +169,8 @@ float3 CalculateSpotLight(Light light, float3 worldPos, float3 normal, float3 vi
 float4 PSMain(VertexOutput input) : SV_TARGET
 {
     float3 worldPos = positionTexture.Sample(gSampler, input.texCoord).xyz;
-    float3 normal = normalize(normalTexture.Sample(gSampler, input.texCoord).xyz);
+    float4 normalData = normalTexture.Sample(gSampler, input.texCoord);
+    float3 normal = normalize(normalData.xyz);
     float4 albedo = albedoTexture.Sample(gSampler, input.texCoord);
 
     if (albedo.a < 0.01f)
@@ -198,8 +199,23 @@ float4 PSMain(VertexOutput input) : SV_TARGET
     }
 
     
+    float particleMask = saturate(1.0f - normalData.w);
     float3 ambient = float3(0.28f, 0.30f, 0.34f) * albedo.rgb;
+
+    // An environment contribution keeps the spherical normal readable even when
+    // the directional light is completely blocked by the shadow map.
+    float hemisphere = normal.y * 0.5f + 0.5f;
+    float3 particleAmbient = albedo.rgb * lerp(0.16f, 0.43f, hemisphere);
+    ambient = lerp(ambient, particleAmbient, particleMask);
+
+    float3 environmentDirection = normalize(float3(-0.35f, 0.80f, -0.25f));
+    float3 environmentHalf = normalize(viewDir + environmentDirection);
+    float environmentSpecular = pow(saturate(dot(normal, environmentHalf)), 20.0f);
+    float fresnel = pow(1.0f - saturate(dot(normal, viewDir)), 3.0f);
+    float3 particleGloss = float3(1.0f, 0.78f, 0.42f) *
+        (environmentSpecular * 0.32f + fresnel * 0.07f) * particleMask;
     float3 lighting = ambient;
+    lighting += particleGloss;
 
     for (int i = 0; i < numLights; i++)
     {

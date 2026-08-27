@@ -114,7 +114,7 @@ bool App::InitD3D()
 	if (!CreateDescriptors()) {return false;}
 	if (!CreateRTV()) { return false; }
 	if (!CreateDepthBuffer()) { return false; }
-	if (!renderingSystem.Initialize(device.Get(), _width, _height)) { return false; }
+	if (!renderingSystem.Initialize(device.Get(), commandQueue.Get(), _width, _height)) { return false; }
 	if (!renderingSystem.InitializeScene(device.Get(), 0, 0)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
 	modelConstantIndex = 4 * (UINT)renderingSystem.GetSceneObjects().size() + 4;
@@ -761,6 +761,7 @@ void App::Render()
 		}
 	}
 	renderingSystem.EndShadowPass(commandList.Get());
+	renderingSystem.UpdateParticles(commandList.Get(), 0.016f, time);
 	renderingSystem.BeginGeometryPass(commandList.Get());
 	commandList->SetGraphicsRootSignature(renderingSystem.GetProceduralRootSignature());
 	commandList->SetPipelineState(renderingSystem.GetProceduralPSO());
@@ -992,6 +993,16 @@ void App::Render()
 		}
 	}
 
+	DirectX::XMVECTOR particleForward = DirectX::XMVector3Normalize(DirectX::XMVectorSubtract(
+		DirectX::XMVectorSet(camera.target.x, camera.target.y, camera.target.z, 0.0f),
+		DirectX::XMVectorSet(camera.position.x, camera.position.y, camera.position.z, 0.0f)));
+	DirectX::XMVECTOR particleRightVector = DirectX::XMVector3Normalize(DirectX::XMVector3Cross(
+		DirectX::XMVectorSet(camera.up.x, camera.up.y, camera.up.z, 0.0f), particleForward));
+	DirectX::XMVECTOR particleUpVector = DirectX::XMVector3Cross(particleForward, particleRightVector);
+	DirectX::XMFLOAT3 particleRight, particleUp;
+	DirectX::XMStoreFloat3(&particleRight, particleRightVector);
+	DirectX::XMStoreFloat3(&particleUp, particleUpVector);
+	renderingSystem.RenderParticles(commandList.Get(), viewProj, particleRight, particleUp);
 	renderingSystem.EndGeometryPass(commandList.Get());
 	renderingSystem.UpdateLights(commandList.Get());
 	renderingSystem.RenderLightingPass(commandList.Get(), swapChainBuffers[backBufferIndex].Get(), rtv);

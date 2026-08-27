@@ -43,7 +43,7 @@ class RenderingSystem
 public:
 	RenderingSystem();
 	~RenderingSystem();
-	bool Initialize(ID3D12Device* device, UINT width, UINT height);
+	bool Initialize(ID3D12Device* device, ID3D12CommandQueue* commandQueue, UINT width, UINT height);
 	void Resize(ID3D12Device* device, UINT width, UINT height);
 	void BeginGeometryPass(ID3D12GraphicsCommandList* commandList);
 	void EndGeometryPass(ID3D12GraphicsCommandList* commandList);
@@ -67,6 +67,9 @@ public:
 	void BeginShadowPass(ID3D12GraphicsCommandList* commandList);
 	void SetShadowCascade(ID3D12GraphicsCommandList* commandList, UINT cascadeIndex);
 	void EndShadowPass(ID3D12GraphicsCommandList* commandList);
+	void UpdateParticles(ID3D12GraphicsCommandList* commandList, float deltaTime, float totalTime);
+	void RenderParticles(ID3D12GraphicsCommandList* commandList, const DirectX::XMMATRIX& viewProjection,
+		const DirectX::XMFLOAT3& cameraRight, const DirectX::XMFLOAT3& cameraUp);
 	const DirectX::XMFLOAT4X4& GetCascadeMatrix(UINT index) const { return cascadeViewProj[index]; }
 	void SetShadowsEnabled(bool enabled) { shadowsEnabled = enabled; }
 	void SetPCFEnabled(bool enabled) { pcfEnabled = enabled; }
@@ -103,6 +106,7 @@ private:
 	bool CreateLightingPass(ID3D12Device* device);
 	bool CreateShadowPass(ID3D12Device* device);
 	bool CreateShadowResources(ID3D12Device* device);
+	bool CreateParticleSystem(ID3D12Device* device, ID3D12CommandQueue* commandQueue);
 	bool CompileShaders(ID3D12Device* device);
 	ComPtr<ID3DBlob> CompileShader(const wchar_t* filename, const char* entryPoint, const char* target);
 	UINT width;
@@ -134,6 +138,10 @@ private:
 	ComPtr<ID3DBlob> lightingVS;
 	ComPtr<ID3DBlob> lightingPS;
 	ComPtr<ID3DBlob> shadowVS;
+	ComPtr<ID3DBlob> particleCS;
+	ComPtr<ID3DBlob> particleVS;
+	ComPtr<ID3DBlob> particleGS;
+	ComPtr<ID3DBlob> particlePS;
 	std::vector<Light> lights;
 	ComPtr<ID3D12Resource> lightBuffer;
 	ComPtr<ID3D12DescriptorHeap> lightBufferHeap;
@@ -157,6 +165,22 @@ private:
 	bool shadowMapInDepthWriteState;
 	bool shadowsEnabled;
 	bool pcfEnabled;
+	static const UINT PARTICLE_COUNT = 1024;
+	ComPtr<ID3D12RootSignature> particleComputeRootSignature;
+	ComPtr<ID3D12PipelineState> particleComputePSO;
+	ComPtr<ID3D12RootSignature> particleRenderRootSignature;
+	ComPtr<ID3D12PipelineState> particleRenderPSO;
+	ComPtr<ID3D12Resource> particleBuffers[2];
+	ComPtr<ID3D12Resource> particleCounters[2];
+	ComPtr<ID3D12DescriptorHeap> particleDescriptorHeap;
+	ComPtr<ID3D12Resource> particleComputeCB;
+	ComPtr<ID3D12Resource> particleRenderCB;
+	ComPtr<ID3D12Resource> particleZeroUpload;
+	UINT8* particleComputeMapped;
+	UINT8* particleRenderMapped;
+	UINT currentParticleBuffer;
+	UINT particleDescriptorSize;
+	bool particleBufferIsSRV[2];
 	std::vector<Scene::SceneObject> sceneObjects;
 	Scene::Octree octree;
 	Scene::Frustum frustum;
