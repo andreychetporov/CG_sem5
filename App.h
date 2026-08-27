@@ -120,6 +120,7 @@ private:
 	ComPtr<ID3D12Resource> billboardVertexBuffer;
 	UINT billboardVBSize = 0;
 	std::vector<Submesh> submeshes;
+	UINT modelConstantIndex = 0;
 	D3D12_VIEWPORT viewport;
 	D3D12_RECT scissorRect;
 	RenderingSystem renderingSystem;

@@ -115,18 +115,20 @@ bool App::InitD3D()
 	if (!CreateRTV()) { return false; }
 	if (!CreateDepthBuffer()) { return false; }
 	if (!renderingSystem.Initialize(device.Get(), _width, _height)) { return false; }
-	if (!renderingSystem.InitializeScene(device.Get(), 500, 300)) { return false; }
+	if (!renderingSystem.InitializeScene(device.Get(), 0, 0)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
+	modelConstantIndex = 4 * (UINT)renderingSystem.GetSceneObjects().size() + 4;
+	if (!LoadModel("model/sponza.obj")) { return false; }
 	if (!LoadBillboardTexture()) { return false; }
 	Light dirLight;
 	dirLight.type = (float)LightType::Directional;
-	dirLight.direction[0] = 0.3f;
-	dirLight.direction[1] = -0.8f;
-	dirLight.direction[2] = 0.5f;
+	dirLight.direction[0] = 0.18f;
+	dirLight.direction[1] = -0.96f;
+	dirLight.direction[2] = 0.22f;
 	dirLight.color[0] = 1.0f;
 	dirLight.color[1] = 0.95f;
 	dirLight.color[2] = 0.85f;
-	dirLight.intensity = 1.2f;
+	dirLight.intensity = 1.6f;
 	renderingSystem.AddLight(dirLight);
 	viewport.TopLeftX = 0;
 	viewport.TopLeftY = 0;
@@ -468,7 +470,8 @@ bool App::LoadTextures(const std::map<std::string, Material>& materials)
 		return false;
 	}
 	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-	cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress();
+	UINT alignedObjectSize = (sizeof(SimpleObjectConstants) + 255) & ~255;
+	cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + modelConstantIndex * alignedObjectSize;
 	cbvDesc.SizeInBytes = (sizeof(ObjectConstants) + 255) & ~255;
 	device->CreateConstantBufferView(&cbvDesc, cbvHeap->GetCPUDescriptorHandleForHeapStart());
 	if (FAILED(commandAllocator->Reset()))
@@ -678,28 +681,86 @@ void App::Update()
 		camera.nearZ,
 		camera.farZ
 	);
+	DirectX::XMFLOAT3 shadowLightDirection(0.18f, -0.96f, 0.22f);
+	renderingSystem.UpdateCascades(view, proj, camera.nearZ, camera.farZ, 200.0f, shadowLightDirection);
 	renderingSystem.UpdateFrustum(view, proj);
 	DirectX::XMFLOAT3 camPos(camera.position.x, camera.position.y, camera.position.z);
 	renderingSystem.CollectVisibleObjects(camPos);
 	const auto& visibleIndices = renderingSystem.GetVisibleIndices();
 	const auto& sceneObjects = renderingSystem.GetSceneObjects();
 	wchar_t title[256];
-	swprintf_s(title, L"CG Lab | Visible: %d / Total: %d | Frustum: %s | Octree: %s | Cam: (%.1f, %.1f, %.1f)",
+	swprintf_s(title, L"CG Lab | Visible: %d/%d | Frustum: %s | Octree: %s | Shadows: %s | PCF: %s | Cam: (%.1f, %.1f, %.1f)",
 		(int)visibleIndices.size(),
 		(int)sceneObjects.size(),
 		renderingSystem.GetFrustumCulling() ? L"ON" : L"OFF",
 		renderingSystem.GetOctreeEnabled() ? L"ON" : L"OFF",
+		renderingSystem.GetShadowsEnabled() ? L"ON" : L"OFF",
+		renderingSystem.GetPCFEnabled() ? L"ON" : L"OFF",
 		camera.position.x, camera.position.y, camera.position.z);
 	SetWindowText(_hwnd, title);
-	memcpy(cbMappedData, &camPos, sizeof(DirectX::XMFLOAT3));
 }
 void App::Render()
 {
 	UINT backBufferIndex = swapChain->GetCurrentBackBufferIndex();
 	FlushCommandQueue();
 	commandAllocator->Reset();
-	commandList->Reset(commandAllocator.Get(), renderingSystem.GetProceduralPSO());
+	commandList->Reset(commandAllocator.Get(), renderingSystem.GetShadowPSO());
 	CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(rtvHeap->GetCPUDescriptorHandleForHeapStart(), backBufferIndex, sizeRTVHeap);
+	const auto& sceneObjects = renderingSystem.GetSceneObjects();
+	UINT alignedSize = (sizeof(SimpleObjectConstants) + 255) & ~255;
+	renderingSystem.BeginShadowPass(commandList.Get());
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	for (UINT cascade = 0; cascade < 4; ++cascade)
+	{
+		renderingSystem.SetShadowCascade(commandList.Get(), cascade);
+		DirectX::XMMATRIX lightViewProj = DirectX::XMLoadFloat4x4(&renderingSystem.GetCascadeMatrix(cascade));
+		for (UINT idx = 0; idx < sceneObjects.size(); ++idx)
+		{
+			const Scene::SceneObject& obj = sceneObjects[idx];
+			DirectX::XMMATRIX world = DirectX::XMMatrixScaling(obj.uniformScale, obj.uniformScale, obj.uniformScale) *
+				DirectX::XMMatrixTranslation(obj.position.x, obj.position.y, obj.position.z);
+			DirectX::XMMATRIX worldLightViewProj = DirectX::XMMatrixMultiply(world, lightViewProj);
+			SimpleObjectConstants constants = {};
+			DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(constants.worldViewProj),
+				DirectX::XMMatrixTranspose(worldLightViewProj));
+			UINT constantIndex = cascade * (UINT)sceneObjects.size() + idx;
+			memcpy(cbMappedData + constantIndex * alignedSize, &constants, sizeof(constants));
+			commandList->SetGraphicsRootConstantBufferView(0,
+				constantBuffer->GetGPUVirtualAddress() + constantIndex * alignedSize);
+			if (obj.kind == Scene::PrimitiveKind::Cube)
+			{
+				D3D12_VERTEX_BUFFER_VIEW vb = renderingSystem.GetCubeVBView();
+				D3D12_INDEX_BUFFER_VIEW ib = renderingSystem.GetCubeIBView();
+				commandList->IASetVertexBuffers(0, 1, &vb);
+				commandList->IASetIndexBuffer(&ib);
+				commandList->DrawIndexedInstanced(renderingSystem.GetCubeIndexCount(), 1, 0, 0, 0);
+			}
+			else
+			{
+				D3D12_VERTEX_BUFFER_VIEW vb = renderingSystem.GetSphereVBView();
+				D3D12_INDEX_BUFFER_VIEW ib = renderingSystem.GetSphereIBView();
+				commandList->IASetVertexBuffers(0, 1, &vb);
+				commandList->IASetIndexBuffer(&ib);
+				commandList->DrawIndexedInstanced(renderingSystem.GetSphereIndexCount(), 1, 0, 0, 0);
+			}
+		}
+		if (indexCount > 0)
+		{
+			DirectX::XMMATRIX sponzaWorld = DirectX::XMMatrixScaling(0.01f, 0.01f, 0.01f);
+			DirectX::XMMATRIX sponzaLightViewProj = DirectX::XMMatrixMultiply(sponzaWorld, lightViewProj);
+			SimpleObjectConstants shadowConstants = {};
+			DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(shadowConstants.worldViewProj),
+				DirectX::XMMatrixTranspose(sponzaLightViewProj));
+			UINT constantIndex = 4 * (UINT)sceneObjects.size() + cascade;
+			memcpy(cbMappedData + constantIndex * alignedSize, &shadowConstants, sizeof(shadowConstants));
+			commandList->SetGraphicsRootConstantBufferView(0,
+				constantBuffer->GetGPUVirtualAddress() + constantIndex * alignedSize);
+			commandList->IASetVertexBuffers(0, 1, &bufferView);
+			commandList->IASetIndexBuffer(&indexBufferView);
+			commandList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
+		}
+	}
+	renderingSystem.EndShadowPass(commandList.Get());
 	renderingSystem.BeginGeometryPass(commandList.Get());
 	commandList->SetGraphicsRootSignature(renderingSystem.GetProceduralRootSignature());
 	commandList->SetPipelineState(renderingSystem.GetProceduralPSO());
@@ -707,7 +768,6 @@ void App::Render()
 	commandList->RSSetScissorRects(1, &scissorRect);
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	const auto& visibleIndices = renderingSystem.GetVisibleIndices();
-	const auto& sceneObjects = renderingSystem.GetSceneObjects();
 	DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
 		DirectX::XMVectorSet(camera.position.x, camera.position.y, camera.position.z, 0.0f),
 		DirectX::XMVectorSet(camera.target.x, camera.target.y, camera.target.z, 0.0f),
@@ -720,6 +780,36 @@ void App::Render()
 		camera.farZ
 	);
 	DirectX::XMMATRIX viewProj = DirectX::XMMatrixMultiply(view, proj);
+	if (indexCount > 0 && cbvHeap)
+	{
+		DirectX::XMMATRIX sponzaWorld = DirectX::XMMatrixScaling(0.01f, 0.01f, 0.01f);
+		DirectX::XMMATRIX sponzaWorldViewProj = DirectX::XMMatrixMultiply(sponzaWorld, viewProj);
+		ObjectConstants modelConstants = {};
+		DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(modelConstants.worldViewProj),
+			DirectX::XMMatrixTranspose(sponzaWorldViewProj));
+		DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(modelConstants.world),
+			DirectX::XMMatrixTranspose(sponzaWorld));
+		modelConstants.uvScale[0] = 1.0f;
+		modelConstants.uvScale[1] = 1.0f;
+		memcpy(cbMappedData + modelConstantIndex * alignedSize, &modelConstants, sizeof(modelConstants));
+
+		commandList->SetGraphicsRootSignature(renderingSystem.GetGeometryRootSignature());
+		commandList->SetPipelineState(renderingSystem.GetGeometryPSO());
+		ID3D12DescriptorHeap* heaps[] = { cbvHeap.Get() };
+		commandList->SetDescriptorHeaps(1, heaps);
+		D3D12_GPU_DESCRIPTOR_HANDLE cbvHandle = cbvHeap->GetGPUDescriptorHandleForHeapStart();
+		commandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		commandList->IASetVertexBuffers(0, 1, &bufferView);
+		commandList->IASetIndexBuffer(&indexBufferView);
+		for (const Submesh& submesh : submeshes)
+		{
+			CD3DX12_GPU_DESCRIPTOR_HANDLE textureHandle(cbvHandle, 1 + submesh.textureIndex * 3, descriptorSize);
+			commandList->SetGraphicsRootDescriptorTable(1, textureHandle);
+			commandList->DrawIndexedInstanced(submesh.indexCount, 1, submesh.indexStart, 0, 0);
+		}
+	}
 
 	const float LOD_DISTANCE_THRESHOLD = 50.0f;
 	DirectX::XMFLOAT3 camPos(camera.position.x, camera.position.y, camera.position.z);
@@ -741,8 +831,9 @@ void App::Render()
 			farObjects.push_back(idx);
 	}
 
-	UINT alignedSize = (sizeof(SimpleObjectConstants) + 255) & ~255;
-	UINT objectIndex = 0;
+	commandList->SetGraphicsRootSignature(renderingSystem.GetProceduralRootSignature());
+	commandList->SetPipelineState(renderingSystem.GetProceduralPSO());
+	UINT objectIndex = modelConstantIndex + 1;
 	for (uint32_t idx : nearObjects)
 	{
 		const Scene::SceneObject& obj = sceneObjects[idx];
@@ -917,6 +1008,7 @@ void App::OnKeyDown(WPARAM key)
 	if (key == '2') renderingSystem.SetDebugMode(1.0f);
 	if (key == '3') renderingSystem.SetDebugMode(2.0f);
 	if (key == '4') renderingSystem.SetDebugMode(3.0f);
+	if (key == '5') renderingSystem.SetDebugMode(4.0f);
 	if (key == VK_F1)
 	{
 		renderingSystem.SetFrustumCulling(!renderingSystem.GetFrustumCulling());
@@ -924,6 +1016,14 @@ void App::OnKeyDown(WPARAM key)
 	if (key == VK_F2)
 	{
 		renderingSystem.SetOctreeEnabled(!renderingSystem.GetOctreeEnabled());
+	}
+	if (key == VK_F3)
+	{
+		renderingSystem.SetShadowsEnabled(!renderingSystem.GetShadowsEnabled());
+	}
+	if (key == VK_F4)
+	{
+		renderingSystem.SetPCFEnabled(!renderingSystem.GetPCFEnabled());
 	}
 }
 void App::OnKeyUp(WPARAM key)

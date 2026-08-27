@@ -30,7 +30,13 @@ struct LightingConstants
 	float cameraPosition[3];
 	float debugMode;
 	int numLights;
-	float padding2[3];
+	int shadowsEnabled;
+	int pcfEnabled;
+	float shadowMapSize;
+	float cascadeSplits[4];
+	float cameraForward[3];
+	float padding2;
+	float cascadeViewProj[4][16];
 };
 class RenderingSystem
 {
@@ -54,6 +60,18 @@ public:
 	ID3D12PipelineState* GetTessellationWireframePSO() const { return tessellationWireframePSO.Get(); }
 	ID3D12RootSignature* GetBillboardRootSignature() const { return billboardRootSignature.Get(); }
 	ID3D12PipelineState* GetBillboardPSO() const { return billboardPSO.Get(); }
+	ID3D12RootSignature* GetShadowRootSignature() const { return shadowRootSignature.Get(); }
+	ID3D12PipelineState* GetShadowPSO() const { return shadowPSO.Get(); }
+	void UpdateCascades(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection,
+		float cameraNear, float cameraFar, float shadowDistance, const DirectX::XMFLOAT3& lightDirection);
+	void BeginShadowPass(ID3D12GraphicsCommandList* commandList);
+	void SetShadowCascade(ID3D12GraphicsCommandList* commandList, UINT cascadeIndex);
+	void EndShadowPass(ID3D12GraphicsCommandList* commandList);
+	const DirectX::XMFLOAT4X4& GetCascadeMatrix(UINT index) const { return cascadeViewProj[index]; }
+	void SetShadowsEnabled(bool enabled) { shadowsEnabled = enabled; }
+	void SetPCFEnabled(bool enabled) { pcfEnabled = enabled; }
+	bool GetShadowsEnabled() const { return shadowsEnabled; }
+	bool GetPCFEnabled() const { return pcfEnabled; }
 	void SetCameraPosition(float x, float y, float z);
 	void SetDebugMode(float mode) { debugMode = mode; }
 	GBuffer* GetGBuffer() { return &gBuffer; }
@@ -83,6 +101,8 @@ private:
 	bool CreateTessellationPass(ID3D12Device* device);
 	bool CreateBillboardPass(ID3D12Device* device);
 	bool CreateLightingPass(ID3D12Device* device);
+	bool CreateShadowPass(ID3D12Device* device);
+	bool CreateShadowResources(ID3D12Device* device);
 	bool CompileShaders(ID3D12Device* device);
 	ComPtr<ID3DBlob> CompileShader(const wchar_t* filename, const char* entryPoint, const char* target);
 	UINT width;
@@ -99,6 +119,8 @@ private:
 	ComPtr<ID3D12PipelineState> billboardPSO;
 	ComPtr<ID3D12RootSignature> lightingRootSignature;
 	ComPtr<ID3D12PipelineState> lightingPSO;
+	ComPtr<ID3D12RootSignature> shadowRootSignature;
+	ComPtr<ID3D12PipelineState> shadowPSO;
 	ComPtr<ID3DBlob> geometryVS;
 	ComPtr<ID3DBlob> geometryPS;
 	ComPtr<ID3DBlob> proceduralVS;
@@ -111,6 +133,7 @@ private:
 	ComPtr<ID3DBlob> billboardPS;
 	ComPtr<ID3DBlob> lightingVS;
 	ComPtr<ID3DBlob> lightingPS;
+	ComPtr<ID3DBlob> shadowVS;
 	std::vector<Light> lights;
 	ComPtr<ID3D12Resource> lightBuffer;
 	ComPtr<ID3D12DescriptorHeap> lightBufferHeap;
@@ -122,6 +145,18 @@ private:
 	D3D12_VERTEX_BUFFER_VIEW fullscreenQuadVBView;
 	float cameraPosition[3];
 	float debugMode;
+	static const UINT CASCADE_COUNT = 4;
+	static const UINT SHADOW_MAP_SIZE = 2048;
+	ComPtr<ID3D12Resource> shadowMap;
+	ComPtr<ID3D12DescriptorHeap> shadowDSVHeap;
+	DirectX::XMFLOAT4X4 cascadeViewProj[CASCADE_COUNT];
+	float cascadeSplits[CASCADE_COUNT];
+	float stableCascadeRadii[CASCADE_COUNT];
+	bool cascadeRadiiInitialized;
+	float cameraForward[3];
+	bool shadowMapInDepthWriteState;
+	bool shadowsEnabled;
+	bool pcfEnabled;
 	std::vector<Scene::SceneObject> sceneObjects;
 	Scene::Octree octree;
 	Scene::Frustum frustum;

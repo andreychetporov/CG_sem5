@@ -1,5 +1,8 @@
 #include "RenderingSystem.h"
 #include <d3dcompiler.h>
+#include <algorithm>
+#include <cfloat>
+#include <cmath>
 RenderingSystem::RenderingSystem()
 {
 	width = 0;
@@ -12,6 +15,12 @@ RenderingSystem::RenderingSystem()
 	debugMode = 0.0f;
 	useFrustumCulling = true;
 	useOctree = true;
+	shadowMapInDepthWriteState = true;
+	shadowsEnabled = true;
+	pcfEnabled = true;
+	cascadeRadiiInitialized = false;
+	for (UINT cascade = 0; cascade < CASCADE_COUNT; ++cascade)
+		stableCascadeRadii[cascade] = 0.0f;
 	cubeIndexCount = 0;
 	sphereIndexCount = 0;
 }
@@ -33,6 +42,10 @@ bool RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height)
 	if (!gBuffer.Initialize(device, width, height))
 		return false;
 	if (!CompileShaders(device))
+		return false;
+	if (!CreateShadowResources(device))
+		return false;
+	if (!CreateShadowPass(device))
 		return false;
 	if (!CreateGeometryPass(device))
 		return false;
@@ -71,7 +84,7 @@ bool RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height)
 	if (FAILED(lightingConstantBuffer->Map(0, &range, reinterpret_cast<void**>(&lightingCBMapped))))
 		return false;
 	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-	heapDesc.NumDescriptors = 5;
+	heapDesc.NumDescriptors = 6;
 	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&lightingCBHeap))))
@@ -103,6 +116,14 @@ bool RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height)
 	handle.ptr += descriptorSize;
 	textureSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	device->CreateShaderResourceView(gBuffer.GetAlbedoBuffer(), &textureSrvDesc, handle);
+	handle.ptr += descriptorSize;
+	D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
+	shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+	shadowSrvDesc.Texture2DArray.MipLevels = 1;
+	shadowSrvDesc.Texture2DArray.ArraySize = CASCADE_COUNT;
+	device->CreateShaderResourceView(shadowMap.Get(), &shadowSrvDesc, handle);
 	struct FullscreenVertex
 	{
 		float position[3];
@@ -163,6 +184,7 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	billboardPS = CompileShader(L"BillboardPass.hlsl", "PSMain", "ps_5_0");
 	lightingVS = CompileShader(L"LightingPass.hlsl", "VSMain", "vs_5_0");
 	lightingPS = CompileShader(L"LightingPass.hlsl", "PSMain", "ps_5_0");
+	shadowVS = CompileShader(L"ShadowPass.hlsl", "VSMain", "vs_5_0");
 	if (!geometryVS || !geometryPS || !lightingVS || !lightingPS)
 		return false;
 	if (!proceduralVS || !proceduralPS)
@@ -170,6 +192,8 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	if (!tessellationVS || !tessellationHS || !tessellationDS || !tessellationPS)
 		return false;
 	if (!billboardVS || !billboardPS)
+		return false;
+	if (!shadowVS)
 		return false;
 	return true;
 }
@@ -349,7 +373,7 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 {
 	CD3DX12_DESCRIPTOR_RANGE ranges[2];
 	ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-	ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
+	ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
 	CD3DX12_ROOT_PARAMETER rootParameters[2];
 	rootParameters[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_PIXEL);
 	rootParameters[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_PIXEL);
@@ -367,7 +391,19 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 	sampler.ShaderRegister = 0;
 	sampler.RegisterSpace = 0;
 	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, rootParameters, 1, &sampler,
+	D3D12_STATIC_SAMPLER_DESC shadowSampler = {};
+	shadowSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+	shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+	shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+	shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+	shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+	shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+	shadowSampler.MinLOD = 0.0f;
+	shadowSampler.MaxLOD = D3D12_FLOAT32_MAX;
+	shadowSampler.ShaderRegister = 1;
+	shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	D3D12_STATIC_SAMPLER_DESC samplers[] = { sampler, shadowSampler };
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, rootParameters, _countof(samplers), samplers,
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 	ComPtr<ID3DBlob> serializedRootSig;
 	ComPtr<ID3DBlob> errorBlob;
@@ -403,6 +439,188 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&lightingPSO))))
 		return false;
 	return true;
+}
+bool RenderingSystem::CreateShadowResources(ID3D12Device* device)
+{
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = SHADOW_MAP_SIZE;
+	desc.Height = SHADOW_MAP_SIZE;
+	desc.DepthOrArraySize = CASCADE_COUNT;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_R32_TYPELESS;
+	desc.SampleDesc.Count = 1;
+	desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	D3D12_HEAP_PROPERTIES heapProps = {};
+	heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_CLEAR_VALUE clearValue = {};
+	clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+	clearValue.DepthStencil.Depth = 1.0f;
+	if (FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue, IID_PPV_ARGS(&shadowMap))))
+		return false;
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+	heapDesc.NumDescriptors = CASCADE_COUNT;
+	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+	if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&shadowDSVHeap))))
+		return false;
+	UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+	for (UINT cascade = 0; cascade < CASCADE_COUNT; ++cascade)
+	{
+		D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+		dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+		dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+		dsvDesc.Texture2DArray.ArraySize = 1;
+		dsvDesc.Texture2DArray.FirstArraySlice = cascade;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE handle(shadowDSVHeap->GetCPUDescriptorHandleForHeapStart(), cascade, descriptorSize);
+		device->CreateDepthStencilView(shadowMap.Get(), &dsvDesc, handle);
+	}
+	shadowMapInDepthWriteState = true;
+	return true;
+}
+bool RenderingSystem::CreateShadowPass(ID3D12Device* device)
+{
+	CD3DX12_ROOT_PARAMETER parameter;
+	parameter.InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, &parameter, 0, nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+	ComPtr<ID3DBlob> serialized;
+	ComPtr<ID3DBlob> errors;
+	if (FAILED(D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serialized.GetAddressOf(), errors.GetAddressOf())))
+		return false;
+	if (FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+		IID_PPV_ARGS(&shadowRootSignature))))
+		return false;
+	D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TANGENT", 1, DXGI_FORMAT_R32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+	psoDesc.pRootSignature = shadowRootSignature.Get();
+	psoDesc.VS = { shadowVS->GetBufferPointer(), shadowVS->GetBufferSize() };
+	psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
+	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	psoDesc.RasterizerState.DepthBias = 1000;
+	psoDesc.RasterizerState.SlopeScaledDepthBias = 1.5f;
+	psoDesc.RasterizerState.DepthBiasClamp = 0.01f;
+	psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	psoDesc.SampleMask = UINT_MAX;
+	psoDesc.NumRenderTargets = 0;
+	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+	psoDesc.SampleDesc.Count = 1;
+	return SUCCEEDED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowPSO)));
+}
+void RenderingSystem::UpdateCascades(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection,
+	float cameraNear, float cameraFar, float shadowDistance, const DirectX::XMFLOAT3& lightDirection)
+{
+	using namespace DirectX;
+	const float lambda = 0.75f;
+	for (UINT i = 0; i < CASCADE_COUNT; ++i)
+	{
+		float p = float(i + 1) / float(CASCADE_COUNT);
+		float logarithmic = cameraNear * powf(shadowDistance / cameraNear, p);
+		float uniform = cameraNear + (shadowDistance - cameraNear) * p;
+		cascadeSplits[i] = lambda * logarithmic + (1.0f - lambda) * uniform;
+	}
+	XMVECTOR determinant;
+	XMMATRIX inverseViewProjection = XMMatrixInverse(&determinant, XMMatrixMultiply(view, projection));
+	XMMATRIX inverseView = XMMatrixInverse(&determinant, view);
+	XMVECTOR cameraDirection = XMVector3Normalize(
+		XMVector3TransformNormal(XMVectorSet(0, 0, 1, 0), inverseView));
+	XMFLOAT3 storedCameraDirection;
+	XMStoreFloat3(&storedCameraDirection, cameraDirection);
+	cameraForward[0] = storedCameraDirection.x;
+	cameraForward[1] = storedCameraDirection.y;
+	cameraForward[2] = storedCameraDirection.z;
+	XMVECTOR nearCorners[4];
+	XMVECTOR farCorners[4];
+	const float xy[4][2] = { {-1,-1}, {-1,1}, {1,1}, {1,-1} };
+	for (UINT i = 0; i < 4; ++i)
+	{
+		nearCorners[i] = XMVector3TransformCoord(XMVectorSet(xy[i][0], xy[i][1], 0.0f, 1.0f), inverseViewProjection);
+		farCorners[i] = XMVector3TransformCoord(XMVectorSet(xy[i][0], xy[i][1], 1.0f, 1.0f), inverseViewProjection);
+	}
+	XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&lightDirection));
+	float previousSplit = cameraNear;
+	for (UINT cascade = 0; cascade < CASCADE_COUNT; ++cascade)
+	{
+		float nearRatio = (previousSplit - cameraNear) / (cameraFar - cameraNear);
+		float farRatio = (cascadeSplits[cascade] - cameraNear) / (cameraFar - cameraNear);
+		XMVECTOR corners[8];
+		XMVECTOR center = XMVectorZero();
+		for (UINT i = 0; i < 4; ++i)
+		{
+			XMVECTOR ray = XMVectorSubtract(farCorners[i], nearCorners[i]);
+			corners[i] = XMVectorMultiplyAdd(ray, XMVectorReplicate(nearRatio), nearCorners[i]);
+			corners[i + 4] = XMVectorMultiplyAdd(ray, XMVectorReplicate(farRatio), nearCorners[i]);
+			center = XMVectorAdd(center, XMVectorAdd(corners[i], corners[i + 4]));
+		}
+		center = XMVectorScale(center, 1.0f / 8.0f);
+		float radius = 0.0f;
+		for (XMVECTOR corner : corners)
+			radius = (std::max)(radius, XMVectorGetX(XMVector3Length(XMVectorSubtract(corner, center))));
+		radius = ceilf(radius * 16.0f) / 16.0f;
+		if (!cascadeRadiiInitialized)
+			stableCascadeRadii[cascade] = radius;
+		else
+			radius = stableCascadeRadii[cascade];
+		XMVECTOR up = fabsf(XMVectorGetY(lightDir)) > 0.95f ? XMVectorSet(0, 0, 1, 0) : XMVectorSet(0, 1, 0, 0);
+		XMVECTOR lightRight = XMVector3Normalize(XMVector3Cross(up, lightDir));
+		XMVECTOR lightUp = XMVector3Normalize(XMVector3Cross(lightDir, lightRight));
+		float texelSize = (radius * 2.0f) / float(SHADOW_MAP_SIZE);
+		float centerX = XMVectorGetX(XMVector3Dot(center, lightRight));
+		float centerY = XMVectorGetX(XMVector3Dot(center, lightUp));
+		float snappedX = floorf(centerX / texelSize + 0.5f) * texelSize;
+		float snappedY = floorf(centerY / texelSize + 0.5f) * texelSize;
+		center = XMVectorAdd(center, XMVectorScale(lightRight, snappedX - centerX));
+		center = XMVectorAdd(center, XMVectorScale(lightUp, snappedY - centerY));
+		XMMATRIX lightView = XMMatrixLookAtLH(
+			XMVectorSubtract(center, XMVectorScale(lightDir, radius * 2.0f)), center, up);
+		XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(
+			-radius, radius, -radius, radius, 0.0f, radius * 4.0f);
+		XMStoreFloat4x4(&cascadeViewProj[cascade], XMMatrixMultiply(lightView, lightProjection));
+		previousSplit = cascadeSplits[cascade];
+	}
+	cascadeRadiiInitialized = true;
+}
+void RenderingSystem::BeginShadowPass(ID3D12GraphicsCommandList* commandList)
+{
+	if (!shadowMapInDepthWriteState)
+	{
+		auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(shadowMap.Get(),
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+		commandList->ResourceBarrier(1, &barrier);
+		shadowMapInDepthWriteState = true;
+	}
+	commandList->SetGraphicsRootSignature(shadowRootSignature.Get());
+	commandList->SetPipelineState(shadowPSO.Get());
+	D3D12_VIEWPORT viewport = { 0.0f, 0.0f, float(SHADOW_MAP_SIZE), float(SHADOW_MAP_SIZE), 0.0f, 1.0f };
+	D3D12_RECT rect = { 0, 0, LONG(SHADOW_MAP_SIZE), LONG(SHADOW_MAP_SIZE) };
+	commandList->RSSetViewports(1, &viewport);
+	commandList->RSSetScissorRects(1, &rect);
+}
+void RenderingSystem::SetShadowCascade(ID3D12GraphicsCommandList* commandList, UINT cascadeIndex)
+{
+	ID3D12Device* device = nullptr;
+	shadowDSVHeap->GetDevice(IID_PPV_ARGS(&device));
+	UINT size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+	device->Release();
+	CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(shadowDSVHeap->GetCPUDescriptorHandleForHeapStart(), cascadeIndex, size);
+	commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+	commandList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+}
+void RenderingSystem::EndShadowPass(ID3D12GraphicsCommandList* commandList)
+{
+	auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(shadowMap.Get(),
+		D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	commandList->ResourceBarrier(1, &barrier);
+	shadowMapInDepthWriteState = false;
 }
 void RenderingSystem::BeginGeometryPass(ID3D12GraphicsCommandList* commandList)
 {
@@ -468,6 +686,20 @@ void RenderingSystem::UpdateLights(ID3D12GraphicsCommandList* commandList)
 	constants.cameraPosition[2] = cameraPosition[2];
 	constants.debugMode = debugMode;
 	constants.numLights = (int)lights.size();
+	constants.shadowsEnabled = shadowsEnabled ? 1 : 0;
+	constants.pcfEnabled = pcfEnabled ? 1 : 0;
+	constants.shadowMapSize = (float)SHADOW_MAP_SIZE;
+	for (UINT cascade = 0; cascade < CASCADE_COUNT; ++cascade)
+	{
+		constants.cascadeSplits[cascade] = cascadeSplits[cascade];
+		DirectX::XMMATRIX matrix = DirectX::XMLoadFloat4x4(&cascadeViewProj[cascade]);
+		DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(constants.cascadeViewProj[cascade]),
+			DirectX::XMMatrixTranspose(matrix));
+	}
+	constants.cameraForward[0] = cameraForward[0];
+	constants.cameraForward[1] = cameraForward[1];
+	constants.cameraForward[2] = cameraForward[2];
+	constants.padding2 = 0.0f;
 	memcpy(lightingCBMapped, &constants, sizeof(LightingConstants));
 }
 void RenderingSystem::SetCameraPosition(float x, float y, float z)
@@ -489,6 +721,18 @@ bool RenderingSystem::InitializeScene(ID3D12Device* device, UINT cubeCount, UINT
 	spawnRegion.min = XMFLOAT3{-15.0f, 0.0f, -15.0f};
 	spawnRegion.max = XMFLOAT3{15.0f, 10.0f, 15.0f};
 	Scene::ScatterCubesAndSpheres(sceneObjects, cubeCount, sphereCount, spawnRegion, 42);
+	Scene::ProceduralMesh centerCubeMesh;
+	Scene::BuildUnitCube(centerCubeMesh);
+	Scene::SceneObject centerCube;
+	centerCube.kind = Scene::PrimitiveKind::Cube;
+	centerCube.position = DirectX::XMFLOAT3(0.0f, 0.75f, 0.0f);
+	centerCube.uniformScale = 1.5f;
+	centerCube.color = DirectX::XMFLOAT4(0.95f, 0.35f, 0.12f, 1.0f);
+	centerCube.localBounds = centerCubeMesh.localBounds;
+	DirectX::XMMATRIX centerWorld = DirectX::XMMatrixScaling(1.5f, 1.5f, 1.5f) *
+		DirectX::XMMatrixTranslation(0.0f, 0.75f, 0.0f);
+	centerCube.worldBounds = Scene::TransformAabb(centerCube.localBounds, centerWorld);
+	sceneObjects.push_back(centerCube);
 	Scene::ProceduralMesh cubeMesh, sphereMesh;
 	Scene::BuildUnitCube(cubeMesh);
 	Scene::BuildUvSphere(sphereMesh, 12, 18, 0.5f);
