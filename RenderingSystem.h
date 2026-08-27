@@ -43,7 +43,8 @@ struct LightingConstants
 	float testLightColor[3];
 	float testLightIntensity;
 	float testLightRange;
-	float testLightPadding[3];
+	float iblEnabled;
+	float testLightPadding[2];
 };
 class RenderingSystem
 {
@@ -62,6 +63,8 @@ public:
 	void UpdateLights(ID3D12GraphicsCommandList* commandList);
 	ID3D12RootSignature* GetGeometryRootSignature() const { return geometryRootSignature.Get(); }
 	ID3D12PipelineState* GetGeometryPSO() const { return geometryPSO.Get(); }
+	ID3D12RootSignature* GetPBRMaterialRootSignature() const { return pbrMaterialRootSignature.Get(); }
+	ID3D12PipelineState* GetPBRMaterialPSO() const { return pbrMaterialPSO.Get(); }
 	ID3D12RootSignature* GetProceduralRootSignature() const { return proceduralRootSignature.Get(); }
 	ID3D12PipelineState* GetProceduralPSO() const { return proceduralPSO.Get(); }
 	ID3D12RootSignature* GetTessellationRootSignature() const { return tessellationRootSignature.Get(); }
@@ -89,11 +92,13 @@ public:
 	void ToggleDepthOfField() { depthOfFieldEnabled = !depthOfFieldEnabled; }
 	void ToggleEyeAdaptation() { eyeAdaptationEnabled = !eyeAdaptationEnabled; }
 	void ToggleEyeAdaptationTest();
+	void ToggleIBL() { iblEnabled = !iblEnabled; }
 	void AdjustFocusDistance(float amount) { focusDistance = (std::max)(0.5f, focusDistance + amount); }
 	void AdjustFocusRange(float amount) { focusRange = (std::max)(0.5f, focusRange + amount); }
 	bool GetDepthOfFieldEnabled() const { return depthOfFieldEnabled; }
 	bool GetEyeAdaptationEnabled() const { return eyeAdaptationEnabled; }
 	bool GetEyeAdaptationTestEnabled() const { return eyeAdaptationTestEnabled; }
+	bool GetIBLEnabled() const { return iblEnabled; }
 	GBuffer* GetGBuffer() { return &gBuffer; }
 	bool InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount);
 	void BuildOctree();
@@ -117,6 +122,7 @@ public:
 	UINT GetSphereIndexCount() const { return sphereIndexCount; }
 private:
 	bool CreateGeometryPass(ID3D12Device* device);
+	bool CreatePBRMaterialPass(ID3D12Device* device);
 	bool CreateProceduralPass(ID3D12Device* device);
 	bool CreateTessellationPass(ID3D12Device* device);
 	bool CreateBillboardPass(ID3D12Device* device);
@@ -126,6 +132,7 @@ private:
 	bool CreateShadowPass(ID3D12Device* device);
 	bool CreateShadowResources(ID3D12Device* device);
 	bool CreateParticleSystem(ID3D12Device* device, ID3D12CommandQueue* commandQueue);
+	bool LoadIBLTextures(ID3D12Device* device, ID3D12CommandQueue* commandQueue);
 	bool CompileShaders(ID3D12Device* device);
 	ComPtr<ID3DBlob> CompileShader(const wchar_t* filename, const char* entryPoint, const char* target);
 	UINT width;
@@ -133,6 +140,8 @@ private:
 	GBuffer gBuffer;
 	ComPtr<ID3D12RootSignature> geometryRootSignature;
 	ComPtr<ID3D12PipelineState> geometryPSO;
+	ComPtr<ID3D12RootSignature> pbrMaterialRootSignature;
+	ComPtr<ID3D12PipelineState> pbrMaterialPSO;
 	ComPtr<ID3D12RootSignature> proceduralRootSignature;
 	ComPtr<ID3D12PipelineState> proceduralPSO;
 	ComPtr<ID3D12RootSignature> tessellationRootSignature;
@@ -146,6 +155,8 @@ private:
 	ComPtr<ID3D12PipelineState> shadowPSO;
 	ComPtr<ID3DBlob> geometryVS;
 	ComPtr<ID3DBlob> geometryPS;
+	ComPtr<ID3DBlob> pbrMaterialVS;
+	ComPtr<ID3DBlob> pbrMaterialPS;
 	ComPtr<ID3DBlob> proceduralVS;
 	ComPtr<ID3DBlob> proceduralPS;
 	ComPtr<ID3DBlob> tessellationVS;
@@ -211,6 +222,7 @@ private:
 	bool depthOfFieldEnabled;
 	bool eyeAdaptationEnabled;
 	bool eyeAdaptationTestEnabled;
+	bool iblEnabled;
 	float focusDistance;
 	float focusRange;
 	float maxBlurRadius;
@@ -248,4 +260,7 @@ private:
 	D3D12_INDEX_BUFFER_VIEW sphereIBView;
 	UINT cubeIndexCount;
 	UINT sphereIndexCount;
+	ComPtr<ID3D12Resource> irradianceMap;
+	ComPtr<ID3D12Resource> prefilteredEnvMap;
+	ComPtr<ID3D12Resource> brdfIntegrationMap;
 };

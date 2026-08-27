@@ -1,4 +1,5 @@
 #include "RenderingSystem.h"
+#include "DDSLoader.h"
 #include <d3dcompiler.h>
 #include <algorithm>
 #include <cfloat>
@@ -35,6 +36,7 @@ RenderingSystem::RenderingSystem()
 	depthOfFieldEnabled = true;
 	eyeAdaptationEnabled = true;
 	eyeAdaptationTestEnabled = false;
+	iblEnabled = true;
 	focusDistance = 20.0f;
 	focusRange = 8.0f;
 	maxBlurRadius = 9.0f;
@@ -87,17 +89,21 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 		return false;
 	if (!CreateGeometryPass(device))
 		return false;
+	if (!CreatePBRMaterialPass(device))
+		return false;
 	if (!CreateProceduralPass(device))
 		return false;
 	if (!CreateTessellationPass(device))
 		return false;
 	if (!CreateBillboardPass(device))
 		return false;
+	if (!CreateParticleSystem(device, commandQueue))
+		return false;
+	if (!LoadIBLTextures(device, commandQueue))
+		return false;
 	if (!CreateLightingPass(device))
 		return false;
 	if (!CreatePostProcessing(device))
-		return false;
-	if (!CreateParticleSystem(device, commandQueue))
 		return false;
 	const UINT maxLights = 32;
 	UINT lightBufferSize = (sizeof(Light) * maxLights + 255) & ~255;
@@ -126,7 +132,7 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 	if (FAILED(lightingConstantBuffer->Map(0, &range, reinterpret_cast<void**>(&lightingCBMapped))))
 		return false;
 	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-	heapDesc.NumDescriptors = 6;
+	heapDesc.NumDescriptors = 9;
 	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&lightingCBHeap))))
@@ -166,6 +172,24 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 	shadowSrvDesc.Texture2DArray.MipLevels = 1;
 	shadowSrvDesc.Texture2DArray.ArraySize = CASCADE_COUNT;
 	device->CreateShaderResourceView(shadowMap.Get(), &shadowSrvDesc, handle);
+	handle.ptr += descriptorSize;
+	D3D12_SHADER_RESOURCE_VIEW_DESC cubeSrvDesc = {};
+	cubeSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	cubeSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+	cubeSrvDesc.Format = irradianceMap->GetDesc().Format;
+	cubeSrvDesc.TextureCube.MipLevels = irradianceMap->GetDesc().MipLevels;
+	device->CreateShaderResourceView(irradianceMap.Get(), &cubeSrvDesc, handle);
+	handle.ptr += descriptorSize;
+	cubeSrvDesc.Format = prefilteredEnvMap->GetDesc().Format;
+	cubeSrvDesc.TextureCube.MipLevels = prefilteredEnvMap->GetDesc().MipLevels;
+	device->CreateShaderResourceView(prefilteredEnvMap.Get(), &cubeSrvDesc, handle);
+	handle.ptr += descriptorSize;
+	D3D12_SHADER_RESOURCE_VIEW_DESC lutSrvDesc = {};
+	lutSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	lutSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	lutSrvDesc.Format = brdfIntegrationMap->GetDesc().Format;
+	lutSrvDesc.Texture2D.MipLevels = brdfIntegrationMap->GetDesc().MipLevels;
+	device->CreateShaderResourceView(brdfIntegrationMap.Get(), &lutSrvDesc, handle);
 	struct FullscreenVertex
 	{
 		float position[3];
@@ -216,6 +240,8 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 {
 	geometryVS = CompileShader(L"GeometryPass.hlsl", "VSMain", "vs_5_0");
 	geometryPS = CompileShader(L"GeometryPass.hlsl", "PSMain", "ps_5_0");
+	pbrMaterialVS = CompileShader(L"PBRMaterial.hlsl", "VSMain", "vs_5_0");
+	pbrMaterialPS = CompileShader(L"PBRMaterial.hlsl", "PSMain", "ps_5_0");
 	proceduralVS = CompileShader(L"ProceduralObject.hlsl", "VSMain", "vs_5_0");
 	proceduralPS = CompileShader(L"ProceduralObject.hlsl", "PSMain", "ps_5_0");
 	tessellationVS = CompileShader(L"TessellationPass.hlsl", "VSMain", "vs_5_0");
@@ -224,8 +250,8 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	tessellationPS = CompileShader(L"TessellationPass.hlsl", "PSMain", "ps_5_0");
 	billboardVS = CompileShader(L"BillboardPass.hlsl", "VSMain", "vs_5_0");
 	billboardPS = CompileShader(L"BillboardPass.hlsl", "PSMain", "ps_5_0");
-	lightingVS = CompileShader(L"LightingPass.hlsl", "VSMain", "vs_5_0");
-	lightingPS = CompileShader(L"LightingPass.hlsl", "PSMain", "ps_5_0");
+	lightingVS = CompileShader(L"LightingPBR.hlsl", "VSMain", "vs_5_0");
+	lightingPS = CompileShader(L"LightingPBR.hlsl", "PSMain", "ps_5_0");
 	shadowVS = CompileShader(L"ShadowPass.hlsl", "VSMain", "vs_5_0");
 	particleCS = CompileShader(L"ParticleUpdate.hlsl", "CSMain", "cs_5_0");
 	particleVS = CompileShader(L"ParticlePass.hlsl", "VSMain", "vs_5_0");
@@ -236,6 +262,8 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	postProcessVS = CompileShader(L"PostProcess.hlsl", "VSMain", "vs_5_0");
 	postProcessPS = CompileShader(L"PostProcess.hlsl", "PSMain", "ps_5_0");
 	if (!geometryVS || !geometryPS || !lightingVS || !lightingPS)
+		return false;
+	if (!pbrMaterialVS || !pbrMaterialPS)
 		return false;
 	if (!proceduralVS || !proceduralPS)
 		return false;
@@ -310,6 +338,58 @@ bool RenderingSystem::CreateGeometryPass(ID3D12Device* device)
 	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&geometryPSO))))
 		return false;
 	return true;
+}
+bool RenderingSystem::CreatePBRMaterialPass(ID3D12Device* device)
+{
+	CD3DX12_DESCRIPTOR_RANGE srvRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
+	CD3DX12_ROOT_PARAMETER rootParameters[2];
+	rootParameters[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
+	rootParameters[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+	D3D12_STATIC_SAMPLER_DESC sampler = {};
+	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+	sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+	sampler.MinLOD = 0.0f;
+	sampler.MaxLOD = D3D12_FLOAT32_MAX;
+	sampler.ShaderRegister = 0;
+	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(_countof(rootParameters), rootParameters, 1, &sampler,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+	ComPtr<ID3DBlob> serializedRootSig;
+	ComPtr<ID3DBlob> errorBlob;
+	if (FAILED(D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf())))
+		return false;
+	if (FAILED(device->CreateRootSignature(0, serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&pbrMaterialRootSignature))))
+		return false;
+
+	D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+	psoDesc.pRootSignature = pbrMaterialRootSignature.Get();
+	psoDesc.VS = { pbrMaterialVS->GetBufferPointer(), pbrMaterialVS->GetBufferSize() };
+	psoDesc.PS = { pbrMaterialPS->GetBufferPointer(), pbrMaterialPS->GetBufferSize() };
+	psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
+	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	psoDesc.SampleMask = UINT_MAX;
+	psoDesc.NumRenderTargets = 3;
+	psoDesc.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	psoDesc.RTVFormats[1] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	psoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	psoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	psoDesc.SampleDesc.Count = 1;
+	return SUCCEEDED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pbrMaterialPSO)));
 }
 bool RenderingSystem::CreateProceduralPass(ID3D12Device* device)
 {
@@ -427,7 +507,7 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 {
 	CD3DX12_DESCRIPTOR_RANGE ranges[2];
 	ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-	ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
+	ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0);
 	CD3DX12_ROOT_PARAMETER rootParameters[2];
 	rootParameters[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_PIXEL);
 	rootParameters[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_PIXEL);
@@ -456,7 +536,18 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 	shadowSampler.MaxLOD = D3D12_FLOAT32_MAX;
 	shadowSampler.ShaderRegister = 1;
 	shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	D3D12_STATIC_SAMPLER_DESC samplers[] = { sampler, shadowSampler };
+	D3D12_STATIC_SAMPLER_DESC iblSampler = {};
+	iblSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	iblSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	iblSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	iblSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	iblSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+	iblSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+	iblSampler.MinLOD = 0.0f;
+	iblSampler.MaxLOD = D3D12_FLOAT32_MAX;
+	iblSampler.ShaderRegister = 2;
+	iblSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	D3D12_STATIC_SAMPLER_DESC samplers[] = { sampler, shadowSampler, iblSampler };
 	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, rootParameters, _countof(samplers), samplers,
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 	ComPtr<ID3DBlob> serializedRootSig;
@@ -1326,6 +1417,50 @@ void RenderingSystem::ClearLights()
 {
 	lights.clear();
 }
+bool RenderingSystem::LoadIBLTextures(ID3D12Device* device, ID3D12CommandQueue* commandQueue)
+{
+	ComPtr<ID3D12CommandAllocator> allocator;
+	ComPtr<ID3D12GraphicsCommandList> commandList;
+	if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))))
+		return false;
+	if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+		IID_PPV_ARGS(&commandList))))
+		return false;
+
+	ComPtr<ID3D12Resource> irradianceUpload;
+	ComPtr<ID3D12Resource> prefilteredUpload;
+	ComPtr<ID3D12Resource> integrationUpload;
+	if (!DDSLoader::Load(device, commandList.Get(), "PBRAssets/IBL/IrradianceMap_BC6U.dds",
+		irradianceMap, irradianceUpload))
+		return false;
+	if (!DDSLoader::Load(device, commandList.Get(), "PBRAssets/IBL/PreFilteredEnvMap_BC6U.dds",
+		prefilteredEnvMap, prefilteredUpload))
+		return false;
+	if (!DDSLoader::Load(device, commandList.Get(), "PBRAssets/IBL/IntegrationMap.dds",
+		brdfIntegrationMap, integrationUpload))
+		return false;
+
+	if (FAILED(commandList->Close()))
+		return false;
+	ID3D12CommandList* lists[] = { commandList.Get() };
+	commandQueue->ExecuteCommandLists(1, lists);
+	ComPtr<ID3D12Fence> fence;
+	if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+		return false;
+	HANDLE eventHandle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+	if (!eventHandle)
+		return false;
+	if (FAILED(commandQueue->Signal(fence.Get(), 1)) ||
+		FAILED(fence->SetEventOnCompletion(1, eventHandle)))
+	{
+		CloseHandle(eventHandle);
+		return false;
+	}
+	WaitForSingleObject(eventHandle, INFINITE);
+	CloseHandle(eventHandle);
+	return true;
+}
+
 void RenderingSystem::UpdateLights(ID3D12GraphicsCommandList* commandList)
 {
 	if (!lights.empty())
@@ -1359,11 +1494,11 @@ void RenderingSystem::UpdateLights(ID3D12GraphicsCommandList* commandList)
 	constants.testLightColor[0] = 1.0f;
 	constants.testLightColor[1] = 0.58f;
 	constants.testLightColor[2] = 0.18f;
-	constants.testLightIntensity = 45.0f;
+	constants.testLightIntensity = 1200.0f;
 	constants.testLightRange = 30.0f;
+	constants.iblEnabled = iblEnabled ? 1.0f : 0.0f;
 	constants.testLightPadding[0] = 0.0f;
 	constants.testLightPadding[1] = 0.0f;
-	constants.testLightPadding[2] = 0.0f;
 	memcpy(lightingCBMapped, &constants, sizeof(LightingConstants));
 }
 void RenderingSystem::SetCameraPosition(float x, float y, float z)
