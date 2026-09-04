@@ -1,9 +1,3 @@
-struct VertexInput
-{
-    float3 position : POSITION;
-    float2 texCoord : TEXCOORD;
-};
-
 struct VertexOutput
 {
     float4 position : SV_POSITION;
@@ -27,14 +21,28 @@ cbuffer PostProcessConstants : register(b0)
 
 Texture2D<float4> hdrTexture : register(t0);
 Texture2D<float4> positionTexture : register(t1);
-StructuredBuffer<float> adaptedLuminance : register(t2);
+Texture2D<float4> normalTexture : register(t2);
+Texture2D<float4> albedoTexture : register(t3);
+StructuredBuffer<float> adaptedLuminance : register(t4);
 SamplerState linearSampler : register(s0);
 
-VertexOutput VSMain(VertexInput input)
+VertexOutput VSMain(uint vertexId : SV_VertexID)
 {
+    static const float2 positions[4] = {
+        float2(-1.0f, -1.0f),
+        float2(-1.0f,  1.0f),
+        float2( 1.0f, -1.0f),
+        float2( 1.0f,  1.0f)
+    };
+    static const float2 texCoords[4] = {
+        float2(0.0f, 1.0f),
+        float2(0.0f, 0.0f),
+        float2(1.0f, 1.0f),
+        float2(1.0f, 0.0f)
+    };
     VertexOutput output;
-    output.position = float4(input.position, 1.0f);
-    output.texCoord = input.texCoord;
+    output.position = float4(positions[vertexId], 0.0f, 1.0f);
+    output.texCoord = texCoords[vertexId];
     return output;
 }
 
@@ -54,8 +62,11 @@ float CircleOfConfusion(float depth)
 float3 ApplyDepthOfField(float2 uv, float3 centerColor)
 {
     float centerDepth = ViewDepth(uv);
-    if (centerDepth <= 0.0f)
+    float4 centerAlbedo = albedoTexture.SampleLevel(linearSampler, uv, 0);
+    if (centerDepth <= 0.0f || centerAlbedo.a < 0.01f)
         return centerColor;
+
+    float3 centerNormal = normalize(normalTexture.SampleLevel(linearSampler, uv, 0).xyz);
 
     float coc = CircleOfConfusion(centerDepth);
     if (coc < 0.01f)
@@ -81,11 +92,17 @@ float3 ApplyDepthOfField(float2 uv, float3 centerColor)
     {
         float2 sampleUv = saturate(uv + poisson[i] * blurScale);
         float sampleDepth = ViewDepth(sampleUv);
+        float4 sampleAlbedo = albedoTexture.SampleLevel(linearSampler, sampleUv, 0);
+        float3 sampleNormal = normalize(normalTexture.SampleLevel(linearSampler, sampleUv, 0).xyz);
         float depthWeight = sampleDepth > 0.0f ?
             saturate(1.25f - abs(sampleDepth - centerDepth) /
                 max(focusRange * 2.0f, 1.0f)) : 0.15f;
-        accumulated += hdrTexture.SampleLevel(linearSampler, sampleUv, 0).rgb * depthWeight;
-        totalWeight += depthWeight;
+        float normalWeight = lerp(0.25f, 1.0f,
+            pow(saturate(dot(centerNormal, sampleNormal)), 8.0f));
+        float geometryWeight = sampleAlbedo.a >= 0.01f ? 1.0f : 0.15f;
+        float sampleWeight = depthWeight * normalWeight * geometryWeight;
+        accumulated += hdrTexture.SampleLevel(linearSampler, sampleUv, 0).rgb * sampleWeight;
+        totalWeight += sampleWeight;
     }
 
     return accumulated / max(totalWeight, 0.001f);

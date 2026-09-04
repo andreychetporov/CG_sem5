@@ -69,7 +69,6 @@ private:
 	bool CreateConstantBuffer();
 	bool LoadTextures(const std::map<std::string, Material>& materials);
 	bool LoadBillboardTexture();
-	bool LoadPBRModel();
 	bool LoadModel(const char* filename);
 	void Update();
 	void Render();
@@ -120,14 +119,6 @@ private:
 	UINT8* billboardCBMapped = nullptr;
 	ComPtr<ID3D12Resource> billboardVertexBuffer;
 	UINT billboardVBSize = 0;
-	ComPtr<ID3D12Resource> pbrVertexBuffer;
-	ComPtr<ID3D12Resource> pbrIndexBuffer;
-	D3D12_VERTEX_BUFFER_VIEW pbrVertexBufferView = {};
-	D3D12_INDEX_BUFFER_VIEW pbrIndexBufferView = {};
-	UINT pbrIndexCount = 0;
-	ComPtr<ID3D12DescriptorHeap> pbrTextureHeap;
-	std::vector<ComPtr<ID3D12Resource>> pbrTextures;
-	std::vector<ComPtr<ID3D12Resource>> pbrTextureUploads;
 	std::vector<Submesh> submeshes;
 	UINT modelConstantIndex = 0;
 	D3D12_VIEWPORT viewport;
