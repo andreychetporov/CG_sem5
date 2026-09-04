@@ -1,3 +1,9 @@
+struct VertexInput
+{
+    float3 position : POSITION;
+    float2 texCoord : TEXCOORD;
+};
+
 struct VertexOutput
 {
     float4 position : SV_POSITION;
@@ -45,23 +51,11 @@ Texture2DArray shadowMap : register(t4);
 SamplerState gSampler : register(s0);
 SamplerComparisonState shadowSampler : register(s1);
 
-VertexOutput VSMain(uint vertexId : SV_VertexID)
+VertexOutput VSMain(VertexInput input)
 {
-    static const float2 positions[4] = {
-        float2(-1.0f, -1.0f),
-        float2(-1.0f,  1.0f),
-        float2( 1.0f, -1.0f),
-        float2( 1.0f,  1.0f)
-    };
-    static const float2 texCoords[4] = {
-        float2(0.0f, 1.0f),
-        float2(0.0f, 0.0f),
-        float2(1.0f, 1.0f),
-        float2(1.0f, 0.0f)
-    };
     VertexOutput output;
-    output.position = float4(positions[vertexId], 0.0f, 1.0f);
-    output.texCoord = texCoords[vertexId];
+    output.position = float4(input.position, 1.0f);
+    output.texCoord = input.texCoord;
     return output;
 }
 

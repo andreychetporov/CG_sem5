@@ -133,6 +133,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="App.h" />
+	<ClInclude Include="DDSLoader.h" />
     <ClInclude Include="d3dx12.h" />
     <ClInclude Include="GBuffer.h" />
     <ClInclude Include="Math.h" />
@@ -154,6 +155,12 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
       <FileType>Document</FileType>
     </None>
+	<None Include="LightingPBR.hlsl">
+	  <FileType>Document</FileType>
+	</None>
+	<None Include="PBRMaterial.hlsl">
+	  <FileType>Document</FileType>
+	</None>
 	<None Include="ShadowPass.hlsl">
 	  <FileType>Document</FileType>
 	</None>

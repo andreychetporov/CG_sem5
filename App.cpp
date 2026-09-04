@@ -119,6 +119,7 @@ bool App::InitD3D()
 	if (!CreateConstantBuffer()) { return false; }
 	modelConstantIndex = 4 * (UINT)renderingSystem.GetSceneObjects().size() + 4;
 	if (!LoadModel("model/sponza.obj")) { return false; }
+	if (!LoadPBRModel()) { return false; }
 	if (!LoadBillboardTexture()) { return false; }
 	Light dirLight;
 	dirLight.type = (float)LightType::Directional;
@@ -689,13 +690,14 @@ void App::Update()
 	const auto& visibleIndices = renderingSystem.GetVisibleIndices();
 	const auto& sceneObjects = renderingSystem.GetSceneObjects();
 	wchar_t title[256];
-	swprintf_s(title, L"CG Lab | Visible: %d/%d | Frustum: %s | Octree: %s | Shadows: %s | PCF: %s | Eye Adapt: %s | Test Light: %s | Cam: (%.1f, %.1f, %.1f)",
+	swprintf_s(title, L"CG Lab | Visible: %d/%d | Frustum: %s | Octree: %s | Shadows: %s | PCF: %s | IBL: %s | Eye Adapt: %s | Test Light: %s | Cam: (%.1f, %.1f, %.1f)",
 		(int)visibleIndices.size(),
 		(int)sceneObjects.size(),
 		renderingSystem.GetFrustumCulling() ? L"ON" : L"OFF",
 		renderingSystem.GetOctreeEnabled() ? L"ON" : L"OFF",
 		renderingSystem.GetShadowsEnabled() ? L"ON" : L"OFF",
 		renderingSystem.GetPCFEnabled() ? L"ON" : L"OFF",
+		renderingSystem.GetIBLEnabled() ? L"ON" : L"OFF",
 		renderingSystem.GetEyeAdaptationEnabled() ? L"ON" : L"OFF",
 		renderingSystem.GetEyeAdaptationTestEnabled() ? L"ON" : L"OFF",
 		camera.position.x, camera.position.y, camera.position.z);
@@ -872,6 +874,37 @@ void App::Render()
 			commandList->DrawIndexedInstanced(renderingSystem.GetSphereIndexCount(), 1, 0, 0, 0);
 		}
 		objectIndex++;
+	}
+
+	if (pbrIndexCount > 0 && pbrTextureHeap)
+	{
+		DirectX::XMMATRIX pbrWorld = DirectX::XMMatrixScaling(4.0f, 4.0f, 4.0f) *
+			DirectX::XMMatrixRotationY(DirectX::XM_PI * 0.65f) *
+			DirectX::XMMatrixTranslation(0.0f, 2.0f, -17.0f);
+		DirectX::XMMATRIX pbrWorldViewProj = DirectX::XMMatrixMultiply(pbrWorld, viewProj);
+		SimpleObjectConstants pbrConstants = {};
+		DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(pbrConstants.worldViewProj),
+			DirectX::XMMatrixTranspose(pbrWorldViewProj));
+		DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(pbrConstants.world),
+			DirectX::XMMatrixTranspose(pbrWorld));
+		pbrConstants.color[0] = 1.0f;
+		pbrConstants.color[1] = 1.0f;
+		pbrConstants.color[2] = 1.0f;
+		pbrConstants.color[3] = 1.0f;
+		memcpy(cbMappedData + objectIndex * alignedSize, &pbrConstants, sizeof(pbrConstants));
+
+		commandList->SetGraphicsRootSignature(renderingSystem.GetPBRMaterialRootSignature());
+		commandList->SetPipelineState(renderingSystem.GetPBRMaterialPSO());
+		ID3D12DescriptorHeap* heaps[] = { pbrTextureHeap.Get() };
+		commandList->SetDescriptorHeaps(1, heaps);
+		commandList->SetGraphicsRootConstantBufferView(0,
+			constantBuffer->GetGPUVirtualAddress() + objectIndex * alignedSize);
+		commandList->SetGraphicsRootDescriptorTable(1, pbrTextureHeap->GetGPUDescriptorHandleForHeapStart());
+		commandList->IASetVertexBuffers(0, 1, &pbrVertexBufferView);
+		commandList->IASetIndexBuffer(&pbrIndexBufferView);
+		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		commandList->DrawIndexedInstanced(pbrIndexCount, 1, 0, 0, 0);
+		++objectIndex;
 	}
 
 	if (!farObjects.empty())
@@ -1051,6 +1084,10 @@ void App::OnKeyDown(WPARAM key)
 	{
 		renderingSystem.ToggleEyeAdaptationTest();
 	}
+	if (key == VK_F8)
+	{
+		renderingSystem.ToggleIBL();
+	}
 }
 void App::OnKeyUp(WPARAM key)
 {
@@ -1101,6 +1138,96 @@ void App::UpdateCamera(float deltaTime)
 	camera.target.x = camera.position.x + sinf(cameraYaw) * cosf(cameraPitch);
 	camera.target.y = camera.position.y + sinf(cameraPitch);
 	camera.target.z = camera.position.z + cosf(cameraYaw) * cosf(cameraPitch);
+}
+
+bool App::LoadPBRModel()
+{
+	std::vector<OBJVertex> vertices;
+	std::vector<UINT32> indices;
+	std::map<std::string, Material> materials;
+	std::vector<Submesh> pbrSubmeshes;
+	if (!OBJLoader::Load("PBRAssets/Models/Cerberus.obj", vertices, indices, materials, pbrSubmeshes) ||
+		vertices.empty() || indices.empty())
+	{
+		MessageBoxA(nullptr, "Failed to load the Cerberus PBR model", "PBR Error", MB_OK);
+		return false;
+	}
+
+	D3D12_HEAP_PROPERTIES uploadHeap = {};
+	uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+	D3D12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(OBJVertex) * vertices.size());
+	if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+		D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&pbrVertexBuffer))))
+		return false;
+	UINT8* mapped = nullptr;
+	D3D12_RANGE noRead = { 0, 0 };
+	if (FAILED(pbrVertexBuffer->Map(0, &noRead, reinterpret_cast<void**>(&mapped))))
+		return false;
+	memcpy(mapped, vertices.data(), sizeof(OBJVertex) * vertices.size());
+	pbrVertexBuffer->Unmap(0, nullptr);
+	pbrVertexBufferView.BufferLocation = pbrVertexBuffer->GetGPUVirtualAddress();
+	pbrVertexBufferView.StrideInBytes = sizeof(OBJVertex);
+	pbrVertexBufferView.SizeInBytes = static_cast<UINT>(sizeof(OBJVertex) * vertices.size());
+
+	bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(UINT32) * indices.size());
+	if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+		D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&pbrIndexBuffer))))
+		return false;
+	if (FAILED(pbrIndexBuffer->Map(0, &noRead, reinterpret_cast<void**>(&mapped))))
+		return false;
+	memcpy(mapped, indices.data(), sizeof(UINT32) * indices.size());
+	pbrIndexBuffer->Unmap(0, nullptr);
+	pbrIndexBufferView.BufferLocation = pbrIndexBuffer->GetGPUVirtualAddress();
+	pbrIndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+	pbrIndexBufferView.SizeInBytes = static_cast<UINT>(sizeof(UINT32) * indices.size());
+	pbrIndexCount = static_cast<UINT>(indices.size());
+
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+	heapDesc.NumDescriptors = 4;
+	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&pbrTextureHeap))))
+		return false;
+	if (FAILED(commandAllocator->Reset()) || FAILED(commandList->Reset(commandAllocator.Get(), nullptr)))
+		return false;
+
+	const char* textureFiles[] = {
+		"PBRAssets/Models/CerberusTextures/Albedo.tga",
+		"PBRAssets/Models/CerberusTextures/Metallic.tga",
+		"PBRAssets/Models/CerberusTextures/Normal.tga",
+		"PBRAssets/Models/CerberusTextures/Roughness.tga"
+	};
+	const UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	for (UINT i = 0; i < _countof(textureFiles); ++i)
+	{
+		std::vector<BYTE> pixels;
+		UINT textureWidth = 0;
+		UINT textureHeight = 0;
+		DXGI_FORMAT textureFormat = DXGI_FORMAT_UNKNOWN;
+		if (!TextureLoader::LoadTGA(textureFiles[i], pixels, textureWidth, textureHeight, textureFormat))
+			return false;
+		ComPtr<ID3D12Resource> texture;
+		ComPtr<ID3D12Resource> upload;
+		if (!TextureLoader::CreateTexture(device.Get(), commandList.Get(), pixels, textureWidth,
+			textureHeight, textureFormat, texture, upload))
+			return false;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE handle(pbrTextureHeap->GetCPUDescriptorHandleForHeapStart(), i, descriptorSize);
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Format = textureFormat;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = 1;
+		device->CreateShaderResourceView(texture.Get(), &srvDesc, handle);
+		pbrTextures.push_back(texture);
+		pbrTextureUploads.push_back(upload);
+	}
+
+	if (FAILED(commandList->Close()))
+		return false;
+	ID3D12CommandList* lists[] = { commandList.Get() };
+	commandQueue->ExecuteCommandLists(1, lists);
+	FlushCommandQueue();
+	return true;
 }
 
 bool App::LoadBillboardTexture()
