@@ -17,6 +17,7 @@ cbuffer PostProcessConstants : register(b0)
     int eyeAdaptationEnabled;
     float exposureKey;
     float gamma;
+    int mouseTrailEnabled;
 }
 
 Texture2D<float4> hdrTexture : register(t0);
@@ -24,6 +25,7 @@ Texture2D<float4> positionTexture : register(t1);
 Texture2D<float4> normalTexture : register(t2);
 Texture2D<float4> albedoTexture : register(t3);
 StructuredBuffer<float> adaptedLuminance : register(t4);
+Texture2D<float4> mouseTrailTexture : register(t5);
 SamplerState linearSampler : register(s0);
 
 VertexOutput VSMain(uint vertexId : SV_VertexID)
@@ -124,5 +126,10 @@ float4 PSMain(VertexOutput input) : SV_TARGET
 
     float3 mappedColor = 1.0f - exp(-max(hdrColor, 0.0f) * exposure);
     mappedColor = pow(saturate(mappedColor), 1.0f / max(gamma, 0.001f));
+    if (mouseTrailEnabled != 0)
+    {
+        float3 trailColor = mouseTrailTexture.SampleLevel(linearSampler, input.texCoord, 0).rgb;
+        mappedColor = saturate(mappedColor + trailColor);
+    }
     return float4(mappedColor, 1.0f);
 }

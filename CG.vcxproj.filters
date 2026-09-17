@@ -27,6 +27,9 @@
     <ClCompile Include="RenderingSystem.cpp">
       <Filter>Исходные файлы</Filter>
     </ClCompile>
+    <ClCompile Include="SceneCulling.cpp">
+      <Filter>Исходные файлы</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="App.h">
@@ -50,11 +53,23 @@
     <ClInclude Include="RenderingSystem.h">
       <Filter>Файлы заголовков</Filter>
     </ClInclude>
+    <ClInclude Include="SceneCulling.h">
+      <Filter>Файлы заголовков</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders.hlsl" />
     <None Include="GeometryPass.hlsl" />
     <None Include="LightingPass.hlsl" />
     <None Include="TessellationPass.hlsl" />
+    <None Include="ShadowPass.hlsl" />
+    <None Include="ParticleUpdate.hlsl" />
+    <None Include="ParticlePass.hlsl" />
+    <None Include="EyeAdaptation.hlsl" />
+    <None Include="PostProcess.hlsl" />
+    <None Include="ProceduralObject.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="MouseTrail.hlsl" />
   </ItemGroup>
 </Project>
