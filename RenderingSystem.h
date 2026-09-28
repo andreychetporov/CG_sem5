@@ -54,7 +54,8 @@ public:
 	void Resize(ID3D12Device* device, UINT width, UINT height);
 	void BeginGeometryPass(ID3D12GraphicsCommandList* commandList);
 	void EndGeometryPass(ID3D12GraphicsCommandList* commandList);
-	void RenderLightingPass(ID3D12GraphicsCommandList* commandList);
+	void RenderLightingPass(ID3D12GraphicsCommandList* commandList,
+		const DirectX::XMMATRIX& viewProjection, const DirectX::XMFLOAT3& cameraPosition);
 	void RenderPostProcessing(ID3D12GraphicsCommandList* commandList, ID3D12Resource* backBuffer,
 		D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV, float deltaTime, const DirectX::XMFLOAT2& mouseUV,
 		const DirectX::XMFLOAT2& previousMouseUV, bool mouseMoved);
@@ -89,8 +90,12 @@ public:
 	void SetDebugMode(float mode) { debugMode = mode; }
 	void ToggleDepthOfField() { depthOfFieldEnabled = !depthOfFieldEnabled; }
 	void ToggleEyeAdaptation() { eyeAdaptationEnabled = !eyeAdaptationEnabled; }
+	void SetDepthOfFieldEnabled(bool enabled) { depthOfFieldEnabled = enabled; }
+	void SetEyeAdaptationEnabled(bool enabled) { eyeAdaptationEnabled = enabled; }
+	void SetEyeAdaptationTestEnabled(bool enabled) { eyeAdaptationTestEnabled = enabled; if (enabled) eyeAdaptationEnabled = true; }
 	void ToggleEyeAdaptationTest();
 	void ToggleMouseTrail();
+	void SetMouseTrailEnabled(bool enabled) { mouseTrailEnabled = enabled; if (!enabled) resetMouseTrail = true; }
 	void ResetMouseTrail() { resetMouseTrail = true; }
 	void AdjustFocusDistance(float amount) { focusDistance = (std::max)(0.5f, focusDistance + amount); }
 	void AdjustFocusRange(float amount) { focusRange = (std::max)(0.5f, focusRange + amount); }
@@ -125,6 +130,8 @@ private:
 	bool CreateTessellationPass(ID3D12Device* device);
 	bool CreateBillboardPass(ID3D12Device* device);
 	bool CreateLightingPass(ID3D12Device* device);
+	bool CreateSkyboxPass(ID3D12Device* device);
+	bool LoadIBLResources(ID3D12Device* device, ID3D12CommandQueue* commandQueue);
 	bool CreatePostProcessing(ID3D12Device* device);
 	bool CreatePostProcessTargets(ID3D12Device* device, UINT width, UINT height);
 	bool CreateShadowPass(ID3D12Device* device);
@@ -146,6 +153,8 @@ private:
 	ComPtr<ID3D12PipelineState> billboardPSO;
 	ComPtr<ID3D12RootSignature> lightingRootSignature;
 	ComPtr<ID3D12PipelineState> lightingPSO;
+	ComPtr<ID3D12RootSignature> skyboxRootSignature;
+	ComPtr<ID3D12PipelineState> skyboxPSO;
 	ComPtr<ID3D12RootSignature> shadowRootSignature;
 	ComPtr<ID3D12PipelineState> shadowPSO;
 	ComPtr<ID3DBlob> geometryVS;
@@ -160,6 +169,8 @@ private:
 	ComPtr<ID3DBlob> billboardPS;
 	ComPtr<ID3DBlob> lightingVS;
 	ComPtr<ID3DBlob> lightingPS;
+	ComPtr<ID3DBlob> skyboxVS;
+	ComPtr<ID3DBlob> skyboxPS;
 	ComPtr<ID3DBlob> shadowVS;
 	ComPtr<ID3DBlob> particleCS;
 	ComPtr<ID3DBlob> particleVS;
@@ -177,6 +188,11 @@ private:
 	ComPtr<ID3D12Resource> lightingConstantBuffer;
 	ComPtr<ID3D12DescriptorHeap> lightingCBHeap;
 	UINT8* lightingCBMapped;
+	ComPtr<ID3D12Resource> irradianceMap;
+	ComPtr<ID3D12Resource> prefilteredEnvMap;
+	ComPtr<ID3D12Resource> brdfIntegrationMap;
+	ComPtr<ID3D12Resource> skyboxConstantBuffer;
+	UINT8* skyboxCBMapped;
 	float cameraPosition[3];
 	float debugMode;
 	static const UINT CASCADE_COUNT = 4;

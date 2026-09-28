@@ -41,6 +41,9 @@ Texture2D positionTexture : register(t1);
 Texture2D normalTexture : register(t2);
 Texture2D albedoTexture : register(t3);
 Texture2DArray shadowMap : register(t4);
+TextureCube<float4> irradianceMap : register(t5);
+TextureCube<float4> prefilteredEnvMap : register(t6);
+Texture2D<float2> brdfIntegrationMap : register(t7);
 
 SamplerState gSampler : register(s0);
 SamplerComparisonState shadowSampler : register(s1);
@@ -178,6 +181,40 @@ float3 CalculateSpotLight(Light light, float3 worldPos, float3 normal, float3 vi
     return (diffuse + specular) * albedo;
 }
 
+float DistributionGGX(float3 N, float3 H, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float nDotH = saturate(dot(N, H));
+    float denominator = nDotH * nDotH * (a2 - 1.0f) + 1.0f;
+    return a2 / max(3.14159265f * denominator * denominator, 0.0001f);
+}
+
+float GeometrySchlickGGX(float nDotV, float roughness)
+{
+    float r = roughness + 1.0f;
+    float k = r * r / 8.0f;
+    return nDotV / max(nDotV * (1.0f - k) + k, 0.0001f);
+}
+
+float3 FresnelSchlick(float cosine, float3 F0)
+{
+    return F0 + (1.0f - F0) * pow(1.0f - cosine, 5.0f);
+}
+
+float3 EvaluatePBR(float3 N, float3 V, float3 L, float3 radiance, float3 albedo, float roughness)
+{
+    float3 H = normalize(V + L);
+    float3 F0 = float3(0.04f, 0.04f, 0.04f);
+    float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
+    float G = GeometrySchlickGGX(saturate(dot(N, V)), roughness) *
+        GeometrySchlickGGX(saturate(dot(N, L)), roughness);
+    float specular = DistributionGGX(N, H, roughness) * G /
+        max(4.0f * saturate(dot(N, V)) * saturate(dot(N, L)), 0.0001f);
+    float3 diffuse = (1.0f - F) * albedo / 3.14159265f;
+    return (diffuse + F * specular) * radiance * saturate(dot(N, L));
+}
+
 float4 PSMain(VertexOutput input) : SV_TARGET
 {
     float3 worldPos = positionTexture.Sample(gSampler, input.texCoord).xyz;
@@ -196,16 +233,16 @@ float4 PSMain(VertexOutput input) : SV_TARGET
         return albedo;
 
     float3 viewDir = normalize(cameraPosition - worldPos);
-
+    float roughness = lerp(0.62f, 0.22f, saturate(1.0f - normalData.w));
+    float metallic = 0.0f;
+    float3 lighting = 0.0f;
     int cascadeIndex = 0;
     float shadow = CalculateShadow(worldPos, normal, cascadeIndex);
     if (debugMode == 4.0f)
     {
         const float3 cascadeColors[4] = {
-            float3(1.0f, 0.25f, 0.25f),
-            float3(0.25f, 1.0f, 0.25f),
-            float3(0.25f, 0.5f, 1.0f),
-            float3(1.0f, 0.85f, 0.25f)
+            float3(1.0f, 0.25f, 0.25f), float3(0.25f, 1.0f, 0.25f),
+            float3(0.25f, 0.5f, 1.0f), float3(1.0f, 0.85f, 0.25f)
         };
         return float4(albedo.rgb * cascadeColors[cascadeIndex], 1.0f);
     }
@@ -214,53 +251,47 @@ float4 PSMain(VertexOutput input) : SV_TARGET
     if (testLightEnabled > 0.5f && testSourceMask > 0.5f)
         return float4(testLightColor * testLightIntensity, 1.0f);
 
-    
-    float particleMask = saturate(1.0f - normalData.w);
-    float3 ambient = float3(0.28f, 0.30f, 0.34f) * albedo.rgb;
-
-    // An environment contribution keeps the spherical normal readable even when
-    // the directional light is completely blocked by the shadow map.
-    float hemisphere = normal.y * 0.5f + 0.5f;
-    float3 particleAmbient = albedo.rgb * lerp(0.16f, 0.43f, hemisphere);
-    ambient = lerp(ambient, particleAmbient, particleMask);
-
-    float3 environmentDirection = normalize(float3(-0.35f, 0.80f, -0.25f));
-    float3 environmentHalf = normalize(viewDir + environmentDirection);
-    float environmentSpecular = pow(saturate(dot(normal, environmentHalf)), 20.0f);
-    float fresnel = pow(1.0f - saturate(dot(normal, viewDir)), 3.0f);
-    float3 particleGloss = float3(1.0f, 0.78f, 0.42f) *
-        (environmentSpecular * 0.32f + fresnel * 0.07f) * particleMask;
-    float3 lighting = ambient;
-    lighting += particleGloss;
-
     for (int i = 0; i < numLights; i++)
     {
         Light light = lights[i];
 
+        float3 lightDir;
+        float attenuation = 1.0f;
         if (light.type == 0.0f)
         {
-            lighting += CalculateDirectionalLight(light, normal, viewDir, albedo.rgb, shadow);
+            lightDir = normalize(-light.direction);
+            attenuation = shadow;
         }
-        else if (light.type == 1.0f)
+        else
         {
-            lighting += CalculatePointLight(light, worldPos, normal, viewDir, albedo.rgb);
+            float3 toLight = light.position - worldPos;
+            float distanceToLight = length(toLight);
+            if (distanceToLight > light.range) continue;
+            lightDir = toLight / max(distanceToLight, 0.0001f);
+            attenuation = pow(saturate(1.0f - distanceToLight / light.range), 2.0f);
         }
-        else if (light.type == 2.0f)
-        {
-            lighting += CalculateSpotLight(light, worldPos, normal, viewDir, albedo.rgb);
-        }
+        lighting += EvaluatePBR(normal, viewDir, lightDir, light.color * light.intensity * attenuation,
+            albedo.rgb, roughness);
     }
 
     if (testLightEnabled > 0.5f)
     {
-        Light testLight = (Light)0;
-        testLight.position = testLightPosition;
-        testLight.type = 1.0f;
-        testLight.range = testLightRange;
-        testLight.color = testLightColor;
-        testLight.intensity = testLightIntensity;
-        lighting += CalculatePointLight(testLight, worldPos, normal, viewDir, albedo.rgb);
+        float3 toTestLight = testLightPosition - worldPos;
+        float distanceToTestLight = length(toTestLight);
+        float3 testLightDir = toTestLight / max(distanceToTestLight, 0.0001f);
+        float attenuation = pow(saturate(1.0f - distanceToTestLight / testLightRange), 2.0f);
+        lighting += EvaluatePBR(normal, viewDir, testLightDir,
+            testLightColor * testLightIntensity * attenuation, albedo.rgb, roughness);
     }
 
+    float nDotV = saturate(dot(normal, viewDir));
+    float3 F0 = lerp(float3(0.04f, 0.04f, 0.04f), albedo.rgb, metallic);
+    float3 F = FresnelSchlick(nDotV, F0);
+    float3 diffuseIBL = irradianceMap.Sample(gSampler, normal).rgb * albedo.rgb;
+    float3 reflection = reflect(-viewDir, normal);
+    float3 prefiltered = prefilteredEnvMap.SampleLevel(gSampler, reflection, roughness * 11.0f).rgb;
+    float2 brdf = brdfIntegrationMap.Sample(gSampler, float2(nDotV, roughness));
+    float3 specularIBL = prefiltered * (F * brdf.x + brdf.y);
+    lighting += (1.0f - F) * (1.0f - metallic) * diffuseIBL + specularIBL;
     return float4(lighting, 1.0f);
 }

@@ -3,12 +3,142 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <fstream>
+
+namespace
+{
+	struct DDS_PIXELFORMAT
+	{
+		UINT size, flags, fourCC, rgbBitCount, rMask, gMask, bMask, aMask;
+	};
+	struct DDS_HEADER
+	{
+		UINT size, flags, height, width, pitchOrLinearSize, depth, mipMapCount;
+		UINT reserved1[11];
+		DDS_PIXELFORMAT ddspf;
+		UINT caps, caps2, caps3, caps4, reserved2;
+	};
+	struct DDS_HEADER_DXT10
+	{
+		DXGI_FORMAT format;
+		D3D12_RESOURCE_DIMENSION dimension;
+		UINT miscFlag;
+		UINT arraySize;
+		UINT miscFlags2;
+	};
+	constexpr UINT DDS_MAGIC = 0x20534444;
+	constexpr UINT DDS_FOURCC_DX10 = 0x30315844;
+	constexpr UINT DDS_RESOURCE_MISC_TEXTURECUBE = 0x4;
+
+	bool LoadDDSCubeOrTexture(ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
+		const wchar_t* filename, ComPtr<ID3D12Resource>& texture,
+		std::vector<ComPtr<ID3D12Resource>>& uploadBuffers)
+	{
+		std::ifstream file(filename, std::ios::binary | std::ios::ate);
+		if (!file) return false;
+		const std::streamsize fileSize = file.tellg();
+		file.seekg(0, std::ios::beg);
+		std::vector<BYTE> bytes(static_cast<size_t>(fileSize));
+		if (!file.read(reinterpret_cast<char*>(bytes.data()), fileSize)) return false;
+		if (bytes.size() < sizeof(UINT) + sizeof(DDS_HEADER) + sizeof(DDS_HEADER_DXT10)) return false;
+
+		const UINT magic = *reinterpret_cast<const UINT*>(bytes.data());
+		const DDS_HEADER* header = reinterpret_cast<const DDS_HEADER*>(bytes.data() + sizeof(UINT));
+		if (magic != DDS_MAGIC || header->size != 124 || header->ddspf.fourCC != DDS_FOURCC_DX10) return false;
+		const DDS_HEADER_DXT10* dx10 = reinterpret_cast<const DDS_HEADER_DXT10*>(
+			bytes.data() + sizeof(UINT) + sizeof(DDS_HEADER));
+		if (dx10->dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || dx10->arraySize != 1) return false;
+
+		const UINT mipCount = (std::max)(1u, header->mipMapCount);
+		const bool isCube = (dx10->miscFlag & DDS_RESOURCE_MISC_TEXTURECUBE) != 0;
+		const UINT arraySize = isCube ? 6u : 1u;
+		D3D12_RESOURCE_DESC desc = {};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		desc.Width = header->width;
+		desc.Height = header->height;
+		desc.DepthOrArraySize = static_cast<UINT16>(arraySize);
+		desc.MipLevels = static_cast<UINT16>(mipCount);
+		desc.Format = dx10->format;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+		D3D12_HEAP_PROPERTIES defaultHeap = {};
+		defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+		if (FAILED(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture)))) return false;
+
+		const UINT subresourceCount = arraySize * mipCount;
+		std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(subresourceCount);
+		std::vector<UINT> rowCounts(subresourceCount);
+		std::vector<UINT64> rowSizes(subresourceCount);
+		UINT64 uploadSize = 0;
+		device->GetCopyableFootprints(&desc, 0, subresourceCount, 0, layouts.data(), rowCounts.data(),
+			rowSizes.data(), &uploadSize);
+		D3D12_HEAP_PROPERTIES uploadHeap = {};
+		uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+		D3D12_RESOURCE_DESC uploadDesc = {};
+		uploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		uploadDesc.Width = uploadSize;
+		uploadDesc.Height = 1;
+		uploadDesc.DepthOrArraySize = 1;
+		uploadDesc.MipLevels = 1;
+		uploadDesc.SampleDesc.Count = 1;
+		uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		ComPtr<ID3D12Resource> upload;
+		if (FAILED(device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)))) return false;
+
+		BYTE* destination = nullptr;
+		if (FAILED(upload->Map(0, nullptr, reinterpret_cast<void**>(&destination)))) return false;
+		size_t sourceOffset = sizeof(UINT) + sizeof(DDS_HEADER) + sizeof(DDS_HEADER_DXT10);
+		for (UINT arraySlice = 0; arraySlice < arraySize; ++arraySlice)
+		{
+			UINT mipWidth = header->width;
+			UINT mipHeight = header->height;
+			for (UINT mip = 0; mip < mipCount; ++mip)
+			{
+				const UINT subresource = arraySlice * mipCount + mip;
+				const bool isBC6H = dx10->format == DXGI_FORMAT_BC6H_UF16 || dx10->format == DXGI_FORMAT_BC6H_SF16;
+				const UINT bytesPerPixel = dx10->format == DXGI_FORMAT_R32G32_FLOAT ? 8u : 4u;
+				const UINT sourceRowPitch = isBC6H ? ((mipWidth + 3) / 4) * 16 : mipWidth * bytesPerPixel;
+				const UINT sourceRows = isBC6H ? (mipHeight + 3) / 4 : mipHeight;
+				const size_t subresourceSize = static_cast<size_t>(sourceRowPitch) * sourceRows;
+				if (sourceOffset + subresourceSize > bytes.size()) { upload->Unmap(0, nullptr); return false; }
+				for (UINT row = 0; row < sourceRows; ++row)
+					memcpy(destination + layouts[subresource].Offset + row * layouts[subresource].Footprint.RowPitch,
+						bytes.data() + sourceOffset + row * sourceRowPitch, sourceRowPitch);
+				sourceOffset += subresourceSize;
+				mipWidth = (std::max)(1u, mipWidth >> 1);
+				mipHeight = (std::max)(1u, mipHeight >> 1);
+			}
+		}
+		upload->Unmap(0, nullptr);
+		for (UINT subresource = 0; subresource < subresourceCount; ++subresource)
+		{
+			D3D12_TEXTURE_COPY_LOCATION dst = {};
+			dst.pResource = texture.Get();
+			dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			dst.SubresourceIndex = subresource;
+			D3D12_TEXTURE_COPY_LOCATION src = {};
+			src.pResource = upload.Get();
+			src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			src.PlacedFootprint = layouts[subresource];
+			commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+		}
+		auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+		commandList->ResourceBarrier(1, &barrier);
+		uploadBuffers.push_back(upload);
+		return true;
+	}
+}
 RenderingSystem::RenderingSystem()
 {
 	width = 0;
 	height = 0;
 	lightBufferMapped = nullptr;
 	lightingCBMapped = nullptr;
+	skyboxCBMapped = nullptr;
 	cameraPosition[0] = 0.0f;
 	cameraPosition[1] = 0.0f;
 	cameraPosition[2] = 0.0f;
@@ -62,6 +192,10 @@ RenderingSystem::~RenderingSystem()
 	{
 		lightingConstantBuffer->Unmap(0, nullptr);
 	}
+	if (skyboxConstantBuffer && skyboxCBMapped)
+	{
+		skyboxConstantBuffer->Unmap(0, nullptr);
+	}
 	if (particleComputeCB && particleComputeMapped)
 	{
 		particleComputeCB->Unmap(0, nullptr);
@@ -91,6 +225,8 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 		return false;
 	if (!CompileShaders(device))
 		return false;
+	if (!LoadIBLResources(device, commandQueue))
+		return false;
 	if (!CreateShadowResources(device))
 		return false;
 	if (!CreateShadowPass(device))
@@ -104,6 +240,8 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 	if (!CreateBillboardPass(device))
 		return false;
 	if (!CreateLightingPass(device))
+		return false;
+	if (!CreateSkyboxPass(device))
 		return false;
 	if (!CreatePostProcessing(device))
 		return false;
@@ -135,8 +273,14 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 		return false;
 	if (FAILED(lightingConstantBuffer->Map(0, &range, reinterpret_cast<void**>(&lightingCBMapped))))
 		return false;
+	bufferDesc.Width = 256;
+	if (FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+		D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&skyboxConstantBuffer))))
+		return false;
+	if (FAILED(skyboxConstantBuffer->Map(0, &range, reinterpret_cast<void**>(&skyboxCBMapped))))
+		return false;
 	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-	heapDesc.NumDescriptors = 6;
+	heapDesc.NumDescriptors = 9;
 	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&lightingCBHeap))))
@@ -176,6 +320,23 @@ bool RenderingSystem::Initialize(ID3D12Device* device, ID3D12CommandQueue* comma
 	shadowSrvDesc.Texture2DArray.MipLevels = 1;
 	shadowSrvDesc.Texture2DArray.ArraySize = CASCADE_COUNT;
 	device->CreateShaderResourceView(shadowMap.Get(), &shadowSrvDesc, handle);
+	handle.ptr += descriptorSize;
+	D3D12_SHADER_RESOURCE_VIEW_DESC cubeSrvDesc = {};
+	cubeSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	cubeSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+	cubeSrvDesc.Format = DXGI_FORMAT_BC6H_UF16;
+	cubeSrvDesc.TextureCube.MipLevels = 1;
+	device->CreateShaderResourceView(irradianceMap.Get(), &cubeSrvDesc, handle);
+	handle.ptr += descriptorSize;
+	cubeSrvDesc.TextureCube.MipLevels = 12;
+	device->CreateShaderResourceView(prefilteredEnvMap.Get(), &cubeSrvDesc, handle);
+	handle.ptr += descriptorSize;
+	D3D12_SHADER_RESOURCE_VIEW_DESC brdfSrvDesc = {};
+	brdfSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	brdfSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	brdfSrvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+	brdfSrvDesc.Texture2D.MipLevels = 1;
+	device->CreateShaderResourceView(brdfIntegrationMap.Get(), &brdfSrvDesc, handle);
 	return true;
 }
 ComPtr<ID3DBlob> RenderingSystem::CompileShader(const wchar_t* filename, const char* entryPoint, const char* target)
@@ -199,6 +360,41 @@ ComPtr<ID3DBlob> RenderingSystem::CompileShader(const wchar_t* filename, const c
 	}
 	return returnBlob;
 }
+bool RenderingSystem::LoadIBLResources(ID3D12Device* device, ID3D12CommandQueue* commandQueue)
+{
+	ComPtr<ID3D12CommandAllocator> uploadAllocator;
+	ComPtr<ID3D12GraphicsCommandList> uploadList;
+	if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&uploadAllocator))))
+		return false;
+	if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, uploadAllocator.Get(), nullptr,
+		IID_PPV_ARGS(&uploadList))))
+		return false;
+	std::vector<ComPtr<ID3D12Resource>> uploadBuffers;
+	if (!LoadDDSCubeOrTexture(device, uploadList.Get(), L"model/ibl/IrradianceMap_BC6U.dds", irradianceMap, uploadBuffers))
+		return false;
+	if (!LoadDDSCubeOrTexture(device, uploadList.Get(), L"model/ibl/PreFilteredEnvMap_BC6U.dds", prefilteredEnvMap, uploadBuffers))
+		return false;
+	if (!LoadDDSCubeOrTexture(device, uploadList.Get(), L"model/ibl/IntegrationMap.dds", brdfIntegrationMap, uploadBuffers))
+		return false;
+	if (FAILED(uploadList->Close()))
+		return false;
+	ID3D12CommandList* lists[] = { uploadList.Get() };
+	commandQueue->ExecuteCommandLists(1, lists);
+	ComPtr<ID3D12Fence> fence;
+	if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+		return false;
+	if (FAILED(commandQueue->Signal(fence.Get(), 1)))
+		return false;
+	if (fence->GetCompletedValue() < 1)
+	{
+		HANDLE eventHandle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+		if (!eventHandle) return false;
+		fence->SetEventOnCompletion(1, eventHandle);
+		WaitForSingleObject(eventHandle, INFINITE);
+		CloseHandle(eventHandle);
+	}
+	return true;
+}
 bool RenderingSystem::CompileShaders(ID3D12Device* device)
 {
 	geometryVS = CompileShader(L"GeometryPass.hlsl", "VSMain", "vs_5_0");
@@ -213,6 +409,8 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	billboardPS = CompileShader(L"BillboardPass.hlsl", "PSMain", "ps_5_0");
 	lightingVS = CompileShader(L"LightingPass.hlsl", "VSMain", "vs_5_0");
 	lightingPS = CompileShader(L"LightingPass.hlsl", "PSMain", "ps_5_0");
+	skyboxVS = CompileShader(L"Skybox.hlsl", "VSMain", "vs_5_0");
+	skyboxPS = CompileShader(L"Skybox.hlsl", "PSMain", "ps_5_0");
 	shadowVS = CompileShader(L"ShadowPass.hlsl", "VSMain", "vs_5_0");
 	particleCS = CompileShader(L"ParticleUpdate.hlsl", "CSMain", "cs_5_0");
 	particleVS = CompileShader(L"ParticlePass.hlsl", "VSMain", "vs_5_0");
@@ -223,7 +421,7 @@ bool RenderingSystem::CompileShaders(ID3D12Device* device)
 	mouseTrailCS = CompileShader(L"MouseTrail.hlsl", "CSMain", "cs_5_0");
 	postProcessVS = CompileShader(L"PostProcess.hlsl", "VSMain", "vs_5_0");
 	postProcessPS = CompileShader(L"PostProcess.hlsl", "PSMain", "ps_5_0");
-	if (!geometryVS || !geometryPS || !lightingVS || !lightingPS)
+	if (!geometryVS || !geometryPS || !lightingVS || !lightingPS || !skyboxVS || !skyboxPS)
 		return false;
 	if (!proceduralVS || !proceduralPS)
 		return false;
@@ -415,12 +613,12 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 {
 	CD3DX12_DESCRIPTOR_RANGE ranges[2];
 	ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-	ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
+	ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0);
 	CD3DX12_ROOT_PARAMETER rootParameters[2];
 	rootParameters[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_PIXEL);
 	rootParameters[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_PIXEL);
 	D3D12_STATIC_SAMPLER_DESC sampler = {};
-	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
 	sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
 	sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
 	sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -476,6 +674,44 @@ bool RenderingSystem::CreateLightingPass(ID3D12Device* device)
 	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&lightingPSO))))
 		return false;
 	return true;
+}
+bool RenderingSystem::CreateSkyboxPass(ID3D12Device* device)
+{
+	CD3DX12_DESCRIPTOR_RANGE environmentRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+	CD3DX12_ROOT_PARAMETER parameters[2];
+	parameters[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
+	parameters[1].InitAsDescriptorTable(1, &environmentRange, D3D12_SHADER_VISIBILITY_PIXEL);
+	D3D12_STATIC_SAMPLER_DESC sampler = {};
+	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+	sampler.MinLOD = 0.0f;
+	sampler.MaxLOD = D3D12_FLOAT32_MAX;
+	sampler.ShaderRegister = 0;
+	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	CD3DX12_ROOT_SIGNATURE_DESC rootDesc(_countof(parameters), parameters, 1, &sampler);
+	ComPtr<ID3DBlob> serialized;
+	ComPtr<ID3DBlob> errors;
+	if (FAILED(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serialized.GetAddressOf(), errors.GetAddressOf()))) return false;
+	if (FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+		IID_PPV_ARGS(&skyboxRootSignature)))) return false;
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+	desc.pRootSignature = skyboxRootSignature.Get();
+	desc.VS = { skyboxVS->GetBufferPointer(), skyboxVS->GetBufferSize() };
+	desc.PS = { skyboxPS->GetBufferPointer(), skyboxPS->GetBufferSize() };
+	desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	desc.DepthStencilState.DepthEnable = FALSE;
+	desc.DepthStencilState.StencilEnable = FALSE;
+	desc.SampleMask = UINT_MAX;
+	desc.NumRenderTargets = 1;
+	desc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	desc.SampleDesc.Count = 1;
+	return SUCCEEDED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&skyboxPSO)));
 }
 bool RenderingSystem::CreatePostProcessing(ID3D12Device* device)
 {
@@ -1203,7 +1439,8 @@ void RenderingSystem::EndGeometryPass(ID3D12GraphicsCommandList* commandList)
 {
 	gBuffer.TransitionToShaderResource(commandList);
 }
-void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList)
+void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList,
+	const DirectX::XMMATRIX& viewProjection, const DirectX::XMFLOAT3& cameraPos)
 {
 	if (!hdrColorIsRenderTarget)
 	{
@@ -1221,15 +1458,38 @@ void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList)
 	D3D12_CPU_DESCRIPTOR_HANDLE hdrRTV = hdrRTVHeap->GetCPUDescriptorHandleForHeapStart();
 	commandList->ClearRenderTargetView(hdrRTV, clearColor, 0, nullptr);
 	commandList->OMSetRenderTargets(1, &hdrRTV, FALSE, nullptr);
-	commandList->SetGraphicsRootSignature(lightingRootSignature.Get());
-	commandList->SetPipelineState(lightingPSO.Get());
+	struct SkyboxConstants
+	{
+		float inverseViewProjection[16];
+		float cameraPosition[3];
+		float padding;
+	};
+	SkyboxConstants skyboxConstants = {};
+	DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(skyboxConstants.inverseViewProjection),
+		DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, viewProjection)));
+	skyboxConstants.cameraPosition[0] = cameraPos.x;
+	skyboxConstants.cameraPosition[1] = cameraPos.y;
+	skyboxConstants.cameraPosition[2] = cameraPos.z;
+	memcpy(skyboxCBMapped, &skyboxConstants, sizeof(skyboxConstants));
 	ID3D12DescriptorHeap* heaps[] = { lightingCBHeap.Get() };
 	commandList->SetDescriptorHeaps(1, heaps);
-	commandList->SetGraphicsRootDescriptorTable(0, lightingCBHeap->GetGPUDescriptorHandleForHeapStart());
+	commandList->SetGraphicsRootSignature(skyboxRootSignature.Get());
+	commandList->SetPipelineState(skyboxPSO.Get());
+	commandList->SetGraphicsRootConstantBufferView(0, skyboxConstantBuffer->GetGPUVirtualAddress());
 	ID3D12Device* device;
 	lightingCBHeap->GetDevice(IID_PPV_ARGS(&device));
 	UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	device->Release();
+	CD3DX12_GPU_DESCRIPTOR_HANDLE environmentHandle(lightingCBHeap->GetGPUDescriptorHandleForHeapStart(), 7,
+		descriptorSize);
+	commandList->SetGraphicsRootDescriptorTable(1, environmentHandle);
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+	commandList->IASetVertexBuffers(0, 0, nullptr);
+	commandList->DrawInstanced(4, 1, 0, 0);
+	commandList->SetGraphicsRootSignature(lightingRootSignature.Get());
+	commandList->SetPipelineState(lightingPSO.Get());
+	commandList->SetDescriptorHeaps(1, heaps);
+	commandList->SetGraphicsRootDescriptorTable(0, lightingCBHeap->GetGPUDescriptorHandleForHeapStart());
 	CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(lightingCBHeap->GetGPUDescriptorHandleForHeapStart(), 1,
 		descriptorSize);
 	commandList->SetGraphicsRootDescriptorTable(1, srvHandle);

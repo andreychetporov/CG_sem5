@@ -2,6 +2,7 @@
 #include "OBJLoader.h"
 #include "TextureLoader.h"
 #include <map>
+#include <string>
 #include <DirectXMath.h>
 const wchar_t* App::WINDOW_CLASS_NAME = L"MainWindowClass";
 const wchar_t* App::WINDOW_TITLE = L"Render Sandbox";
@@ -115,6 +116,7 @@ bool App::InitD3D()
 	if (!CreateRTV()) { return false; }
 	if (!CreateDepthBuffer()) { return false; }
 	if (!renderingSystem.Initialize(device.Get(), commandQueue.Get(), _width, _height)) { return false; }
+	ApplyRenderConfig();
 	if (!renderingSystem.InitializeScene(device.Get(), 0, 0)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
 	modelConstantIndex = 4 * (UINT)renderingSystem.GetSceneObjects().size() + 4;
@@ -1007,7 +1009,7 @@ void App::Render()
 	renderingSystem.RenderParticles(commandList.Get(), viewProj, particleRight, particleUp);
 	renderingSystem.EndGeometryPass(commandList.Get());
 	renderingSystem.UpdateLights(commandList.Get());
-	renderingSystem.RenderLightingPass(commandList.Get());
+	renderingSystem.RenderLightingPass(commandList.Get(), viewProj, camPos);
 
 	if (!trailMouseInitialized) 
 	{
@@ -1042,6 +1044,8 @@ void App::OnKeyDown(WPARAM key)
 {
 	if (key < 256)
 		keys[key] = true;
+	if (!runtimeHotkeys)
+		return;
 	if (key == '1') renderingSystem.SetDebugMode(0.0f);
 	if (key == '2') renderingSystem.SetDebugMode(1.0f);
 	if (key == '3') renderingSystem.SetDebugMode(2.0f);
@@ -1083,6 +1087,35 @@ void App::OnKeyDown(WPARAM key)
 	{
 		renderingSystem.ResetMouseTrail();
 	}
+}
+void App::ApplyRenderConfig()
+{
+	char executablePath[MAX_PATH] = {};
+	GetModuleFileNameA(nullptr, executablePath, MAX_PATH);
+	std::string executableDirectory(executablePath);
+	executableDirectory.erase(executableDirectory.find_last_of("\\/") + 1);
+	std::string configPath = executableDirectory + "RenderConfig.ini";
+	// Visual Studio launches the executable from x64\Debug, while the editable
+	// configuration stays in the project root two levels above it.
+	if (GetFileAttributesA(configPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+		configPath = executableDirectory + "..\\..\\RenderConfig.ini";
+
+	auto readBool = [&configPath](const char* section, const char* key, bool defaultValue)
+	{
+		return GetPrivateProfileIntA(section, key, defaultValue ? 1 : 0, configPath.c_str()) != 0;
+	};
+
+	renderingSystem.SetShadowsEnabled(readBool("Rendering", "Shadows", true));
+	renderingSystem.SetPCFEnabled(readBool("Rendering", "PCF", true));
+	renderingSystem.SetFrustumCulling(readBool("Rendering", "FrustumCulling", true));
+	renderingSystem.SetOctreeEnabled(readBool("Rendering", "Octree", true));
+	renderingSystem.SetDebugMode((float)GetPrivateProfileIntA("Rendering", "DebugMode", 0, configPath.c_str()));
+
+	renderingSystem.SetDepthOfFieldEnabled(readBool("PostProcessing", "DepthOfField", true));
+	renderingSystem.SetEyeAdaptationEnabled(readBool("PostProcessing", "EyeAdaptation", true));
+	renderingSystem.SetEyeAdaptationTestEnabled(readBool("PostProcessing", "EyeAdaptationTest", false));
+	renderingSystem.SetMouseTrailEnabled(readBool("PostProcessing", "MouseTrail", true));
+	runtimeHotkeys = readBool("Controls", "RuntimeHotkeys", false);
 }
 void App::OnKeyUp(WPARAM key)
 {

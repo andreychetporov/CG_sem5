@@ -70,6 +70,7 @@ private:
 	bool LoadTextures(const std::map<std::string, Material>& materials);
 	bool LoadBillboardTexture();
 	bool LoadModel(const char* filename);
+	void ApplyRenderConfig();
 	void Update();
 	void Render();
 	void UpdateCamera(float deltaTime);
@@ -140,4 +141,5 @@ private:
 	bool useTessellation = true;
 	float tessellationLevel = 4.0f;
 	bool wireframeMode = false;
+	bool runtimeHotkeys = false;
 };

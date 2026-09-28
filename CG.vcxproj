@@ -169,6 +169,9 @@
     <None Include="PostProcess.hlsl">
       <FileType>Document</FileType>
     </None>
+    <None Include="Skybox.hlsl">
+      <FileType>Document</FileType>
+    </None>
     <None Include="ProceduralObject.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">4.0</ShaderModel>
@@ -197,6 +200,7 @@
     <None Include="MouseTrail.hlsl">
       <FileType>Document</FileType>
     </None>
+    <None Include="RenderConfig.ini" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

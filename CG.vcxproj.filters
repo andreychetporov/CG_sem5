@@ -67,9 +67,11 @@
     <None Include="ParticlePass.hlsl" />
     <None Include="EyeAdaptation.hlsl" />
     <None Include="PostProcess.hlsl" />
+    <None Include="Skybox.hlsl" />
     <None Include="ProceduralObject.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <None Include="MouseTrail.hlsl" />
+    <None Include="RenderConfig.ini" />
   </ItemGroup>
 </Project>
