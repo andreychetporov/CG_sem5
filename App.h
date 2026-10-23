@@ -10,6 +10,7 @@
 #include "d3dx12.h"
 #include "Math.h"
 #include "RenderingSystem.h"
+#include "Terrain.h"
 #include "OBJLoader.h"
 using Microsoft::WRL::ComPtr;
 struct Vertex
@@ -125,6 +126,7 @@ private:
 	D3D12_VIEWPORT viewport;
 	D3D12_RECT scissorRect;
 	RenderingSystem renderingSystem;
+	Terrain terrain;
 	Camera camera;
 	float time;
 	bool keys[256];

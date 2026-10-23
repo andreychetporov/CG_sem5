@@ -1,0 +1,265 @@
+{
+  "$id": "1",
+  "Assets": {
+    "$id": "2",
+    "$values": [
+      {
+        "$id": "3",
+        "Terrain": {
+          "$id": "4",
+          "Id": "05d313f2-f031-4b1d-9f99-1d2eaea67889",
+          "Nodes": {
+            "$id": "5",
+            "215": {
+              "$id": "6",
+              "$type": "QuadSpinner.Gaea.Nodes.Mountain, Gaea.Nodes",
+              "Scale": 0.6834948,
+              "Height": 2.3280137,
+              "Seed": 61974,
+              "Id": 215,
+              "Name": "Mountain",
+              "Position": {
+                "$id": "7",
+                "X": 26348.791,
+                "Y": 26139.625
+              },
+              "Ports": {
+                "$id": "8",
+                "$values": [
+                  {
+                    "$id": "9",
+                    "Name": "In",
+                    "Type": "PrimaryIn",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "6"
+                    }
+                  },
+                  {
+                    "$id": "10",
+                    "Name": "Out",
+                    "Type": "PrimaryOut",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "6"
+                    }
+                  }
+                ]
+              },
+              "Modifiers": {
+                "$id": "11",
+                "$values": []
+              }
+            },
+            "664": {
+              "$id": "12",
+              "$type": "QuadSpinner.Gaea.Nodes.Erosion, Gaea.Nodes",
+              "Duration": 0.1171925,
+              "Seed": 59323,
+              "Id": 664,
+              "Name": "Erosion",
+              "Position": {
+                "$id": "13",
+                "X": 26637.125,
+                "Y": 26139.625
+              },
+              "SaveDefinition": {
+                "$id": "14",
+                "Node": 664,
+                "Filename": "Erosion",
+                "Format": "PNG16",
+                "IsEnabled": true,
+                "DisabledInProfiles": {
+                  "$id": "15",
+                  "$values": []
+                }
+              },
+              "Ports": {
+                "$id": "16",
+                "$values": [
+                  {
+                    "$id": "17",
+                    "Name": "In",
+                    "Type": "PrimaryIn, Required",
+                    "Record": {
+                      "$id": "18",
+                      "From": 215,
+                      "To": 664,
+                      "FromPort": "Out",
+                      "ToPort": "In",
+                      "IsValid": true
+                    },
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "12"
+                    }
+                  },
+                  {
+                    "$id": "19",
+                    "Name": "Out",
+                    "Type": "PrimaryOut",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "12"
+                    }
+                  },
+                  {
+                    "$id": "20",
+                    "Name": "AreaMask",
+                    "Type": "In",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "12"
+                    }
+                  },
+                  {
+                    "$id": "21",
+                    "Name": "SedimentRemoval",
+                    "Type": "In",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "12"
+                    }
+                  },
+                  {
+                    "$id": "22",
+                    "Name": "Wear",
+                    "Type": "Out",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "12"
+                    }
+                  },
+                  {
+                    "$id": "23",
+                    "Name": "Deposits",
+                    "Type": "Out",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "12"
+                    }
+                  },
+                  {
+                    "$id": "24",
+                    "Name": "Flow",
+                    "Type": "Out",
+                    "IsExporting": true,
+                    "Parent": {
+                      "$ref": "12"
+                    }
+                  }
+                ]
+              },
+              "Modifiers": {
+                "$id": "25",
+                "$values": []
+              }
+            }
+          },
+          "Groups": {
+            "$id": "26"
+          },
+          "Notes": {
+            "$id": "27"
+          },
+          "GraphTabs": {
+            "$id": "28",
+            "$values": [
+              {
+                "$id": "29",
+                "Name": "Graph 1",
+                "Color": "Brass",
+                "ZoomFactor": 1.0,
+                "ViewportLocation": {
+                  "$id": "30",
+                  "X": 26000.0,
+                  "Y": 26000.0
+                }
+              }
+            ]
+          },
+          "Width": 5000.0,
+          "Height": 2500.0,
+          "Ratio": 0.5,
+          "Regions": {
+            "$id": "31",
+            "$values": []
+          }
+        },
+        "Automation": {
+          "$id": "32",
+          "Bindings": {
+            "$id": "33",
+            "$values": []
+          },
+          "Expressions": {
+            "$id": "34"
+          },
+          "Variables": {
+            "$id": "35"
+          }
+        },
+        "BuildDefinition": {
+          "$id": "36",
+          "Type": "Standard",
+          "Destination": "D:\\terrain",
+          "Resolution": 1024,
+          "BakeResolution": 2048,
+          "TileResolution": 1024,
+          "BucketResolution": 2048,
+          "NumberOfTiles": 3,
+          "EdgeBlending": 0.25,
+          "TileZeroIndex": true,
+          "TilePattern": "_y%Y%_x%X%",
+          "OrganizeFiles": "NodeSubFolder",
+          "ColorSpace": "sRGB"
+        },
+        "State": {
+          "$id": "37",
+          "BakeResolution": 2048,
+          "PreviewResolution": 1024,
+          "HDResolution": 4096,
+          "SelectedNode": 664,
+          "NodeBookmarks": {
+            "$id": "38",
+            "$values": []
+          },
+          "Viewport": {
+            "$id": "39",
+            "CameraPosition": {
+              "$id": "40",
+              "$values": []
+            },
+            "Camera": {
+              "$id": "41"
+            },
+            "RenderMode": "Realistic",
+            "AmbientOcclusion": true,
+            "Shadows": true
+          }
+        },
+        "BuildProfiles": {
+          "$id": "42"
+        }
+      }
+    ]
+  },
+  "Id": "93f8f40c",
+  "Branch": 1,
+  "Macros": {
+    "$id": "43",
+    "$values": []
+  },
+  "Metadata": {
+    "$id": "44",
+    "Name": "",
+    "Description": "",
+    "Version": "2.3.1.0",
+    "Edition": "Community",
+    "Owner": "",
+    "DateCreated": "2026-10-23 21:39:50Z",
+    "DateLastBuilt": "2026-10-23 21:39:50Z",
+    "DateLastSaved": "2026-10-23 21:53:00Z",
+    "ModifiedVersion": "2.3.1.0"
+  }
+}

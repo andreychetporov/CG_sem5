@@ -133,6 +133,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="App.h" />
+    <ClInclude Include="Terrain.h" />
     <ClInclude Include="d3dx12.h" />
     <ClInclude Include="GBuffer.h" />
     <ClInclude Include="Math.h" />
@@ -169,6 +170,7 @@
     <None Include="PostProcess.hlsl">
       <FileType>Document</FileType>
     </None>
+    <None Include="Terrain.hlsl" />
     <None Include="Skybox.hlsl">
       <FileType>Document</FileType>
     </None>

@@ -83,6 +83,7 @@ public:
 		const DirectX::XMFLOAT3& cameraRight, const DirectX::XMFLOAT3& cameraUp);
 	const DirectX::XMFLOAT4X4& GetCascadeMatrix(UINT index) const { return cascadeViewProj[index]; }
 	void SetShadowsEnabled(bool enabled) { shadowsEnabled = enabled; }
+	void SetSkyboxEnabled(bool enabled) { skyboxEnabled = enabled; }
 	void SetPCFEnabled(bool enabled) { pcfEnabled = enabled; }
 	bool GetShadowsEnabled() const { return shadowsEnabled; }
 	bool GetPCFEnabled() const { return pcfEnabled; }
@@ -155,6 +156,7 @@ private:
 	ComPtr<ID3D12PipelineState> lightingPSO;
 	ComPtr<ID3D12RootSignature> skyboxRootSignature;
 	ComPtr<ID3D12PipelineState> skyboxPSO;
+	bool skyboxEnabled = true;
 	ComPtr<ID3D12RootSignature> shadowRootSignature;
 	ComPtr<ID3D12PipelineState> shadowPSO;
 	ComPtr<ID3DBlob> geometryVS;

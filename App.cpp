@@ -117,10 +117,17 @@ bool App::InitD3D()
 	if (!CreateDepthBuffer()) { return false; }
 	if (!renderingSystem.Initialize(device.Get(), commandQueue.Get(), _width, _height)) { return false; }
 	ApplyRenderConfig();
+	if (terrain.enabled)
+	{
+		if (!terrain.Initialize(device.Get())) { MessageBoxA(nullptr,"Terrain initialization failed", "Terrain",MB_OK); return false; }
+		camera.position=Vec3(0,460,-1100);
+		cameraYaw=0.0f; cameraPitch=-0.15f;
+		renderingSystem.SetShadowsEnabled(false);
+	}
 	if (!renderingSystem.InitializeScene(device.Get(), 0, 0)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
 	modelConstantIndex = 4 * (UINT)renderingSystem.GetSceneObjects().size() + 4;
-	if (!LoadModel("model/sponza.obj")) { return false; }
+	if (!terrain.enabled && !LoadModel("model/sponza.obj")) { return false; }
 	if (!LoadBillboardTexture()) { return false; }
 	Light dirLight;
 	dirLight.type = (float)LightType::Directional;
@@ -702,6 +709,10 @@ void App::Update()
 		renderingSystem.GetEyeAdaptationTestEnabled() ? L"ON" : L"OFF",
 		camera.position.x, camera.position.y, camera.position.z);
 	SetWindowText(_hwnd, title);
+	if (terrain.enabled) {
+		swprintf_s(title,L"Terrain | Tiles: %u | Culled nodes: %u | WASD + Space/Shift | Speed: 150 m/s",terrain.visible,terrain.culled);
+		SetWindowText(_hwnd,title);
+	}
 }
 void App::Render()
 {
@@ -785,6 +796,8 @@ void App::Render()
 		camera.farZ
 	);
 	DirectX::XMMATRIX viewProj = DirectX::XMMatrixMultiply(view, proj);
+	if (terrain.enabled) terrain.Render(commandList.Get(),view,proj,
+		DirectX::XMFLOAT3(camera.position.x,camera.position.y,camera.position.z));
 	if (indexCount > 0 && cbvHeap)
 	{
 		DirectX::XMMATRIX sponzaWorld = DirectX::XMMatrixScaling(0.01f, 0.01f, 0.01f);
@@ -1006,7 +1019,7 @@ void App::Render()
 	DirectX::XMFLOAT3 particleRight, particleUp;
 	DirectX::XMStoreFloat3(&particleRight, particleRightVector);
 	DirectX::XMStoreFloat3(&particleUp, particleUpVector);
-	renderingSystem.RenderParticles(commandList.Get(), viewProj, particleRight, particleUp);
+	if (!terrain.enabled) renderingSystem.RenderParticles(commandList.Get(), viewProj, particleRight, particleUp);
 	renderingSystem.EndGeometryPass(commandList.Get());
 	renderingSystem.UpdateLights(commandList.Get());
 	renderingSystem.RenderLightingPass(commandList.Get(), viewProj, camPos);
@@ -1106,6 +1119,7 @@ void App::ApplyRenderConfig()
 	};
 
 	renderingSystem.SetShadowsEnabled(readBool("Rendering", "Shadows", true));
+	renderingSystem.SetSkyboxEnabled(readBool("Rendering", "Skybox", true));
 	renderingSystem.SetPCFEnabled(readBool("Rendering", "PCF", true));
 	renderingSystem.SetFrustumCulling(readBool("Rendering", "FrustumCulling", true));
 	renderingSystem.SetOctreeEnabled(readBool("Rendering", "Octree", true));
@@ -1116,6 +1130,11 @@ void App::ApplyRenderConfig()
 	renderingSystem.SetEyeAdaptationTestEnabled(readBool("PostProcessing", "EyeAdaptationTest", false));
 	renderingSystem.SetMouseTrailEnabled(readBool("PostProcessing", "MouseTrail", true));
 	runtimeHotkeys = readBool("Controls", "RuntimeHotkeys", false);
+	terrain.enabled = readBool("Terrain", "Enabled", true);
+	terrain.culling = readBool("Terrain", "FrustumCulling", true);
+	terrain.wireframe = readBool("Terrain", "Wireframe", false);
+	terrain.colorLOD = readBool("Terrain", "ColorLOD", false);
+	if(terrain.enabled) { renderingSystem.SetDepthOfFieldEnabled(false);renderingSystem.SetMouseTrailEnabled(false); }
 }
 void App::OnKeyUp(WPARAM key)
 {
@@ -1148,7 +1167,7 @@ void App::OnMouseUp()
 }
 void App::UpdateCamera(float deltaTime)
 {
-	float moveSpeed = 10.0f * deltaTime;
+	float moveSpeed = (terrain.enabled ? 150.0f : 10.0f) * deltaTime;
 	Vec3 forward(sinf(cameraYaw), 0, cosf(cameraYaw));
 	Vec3 right(cosf(cameraYaw), 0, -sinf(cameraYaw));
 	if (keys['W']) camera.position = camera.position + forward * moveSpeed;

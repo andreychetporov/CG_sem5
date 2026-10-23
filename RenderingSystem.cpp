@@ -1485,7 +1485,8 @@ void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList,
 	commandList->SetGraphicsRootDescriptorTable(1, environmentHandle);
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	commandList->IASetVertexBuffers(0, 0, nullptr);
-	commandList->DrawInstanced(4, 1, 0, 0);
+	if (skyboxEnabled)
+		commandList->DrawInstanced(4, 1, 0, 0);
 	commandList->SetGraphicsRootSignature(lightingRootSignature.Get());
 	commandList->SetPipelineState(lightingPSO.Get());
 	commandList->SetDescriptorHeaps(1, heaps);
