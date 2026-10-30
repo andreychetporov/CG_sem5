@@ -11,6 +11,7 @@
 #include "Math.h"
 #include "RenderingSystem.h"
 #include "Terrain.h"
+#include "TemporalAA.h"
 #include "OBJLoader.h"
 using Microsoft::WRL::ComPtr;
 struct Vertex
@@ -75,6 +76,7 @@ private:
 	void Update();
 	void Render();
 	void UpdateCamera(float deltaTime);
+	DirectX::XMFLOAT3 shadowLightDirection;
 private:
 	HWND _hwnd;
 	int _width;
@@ -127,6 +129,7 @@ private:
 	D3D12_RECT scissorRect;
 	RenderingSystem renderingSystem;
 	Terrain terrain;
+	TemporalAA temporalAA;
 	Camera camera;
 	float time;
 	bool keys[256];

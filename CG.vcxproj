@@ -134,6 +134,7 @@
   <ItemGroup>
     <ClInclude Include="App.h" />
     <ClInclude Include="Terrain.h" />
+    <ClInclude Include="TemporalAA.h" />
     <ClInclude Include="d3dx12.h" />
     <ClInclude Include="GBuffer.h" />
     <ClInclude Include="Math.h" />
@@ -171,6 +172,7 @@
       <FileType>Document</FileType>
     </None>
     <None Include="Terrain.hlsl" />
+    <None Include="TAA.hlsl" />
     <None Include="Skybox.hlsl">
       <FileType>Document</FileType>
     </None>

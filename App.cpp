@@ -117,23 +117,25 @@ bool App::InitD3D()
 	if (!CreateDepthBuffer()) { return false; }
 	if (!renderingSystem.Initialize(device.Get(), commandQueue.Get(), _width, _height)) { return false; }
 	ApplyRenderConfig();
+	if (!temporalAA.Initialize(device.Get(),_width,_height)) { MessageBoxA(nullptr,"TAA initialization failed","TAA",MB_OK);return false; }
 	if (terrain.enabled)
 	{
-		if (!terrain.Initialize(device.Get())) { MessageBoxA(nullptr,"Terrain initialization failed", "Terrain",MB_OK); return false; }
+		if (!terrain.Initialize(device.Get(), commandQueue.Get())) { MessageBoxA(nullptr,"Terrain initialization failed", "Terrain",MB_OK); return false; }
 		camera.position=Vec3(0,460,-1100);
 		cameraYaw=0.0f; cameraPitch=-0.15f;
-		renderingSystem.SetShadowsEnabled(false);
 	}
-	if (!renderingSystem.InitializeScene(device.Get(), 0, 0)) { return false; }
+	if (!renderingSystem.InitializeScene(device.Get(), 0, 0, terrain.enabled)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
 	modelConstantIndex = 4 * (UINT)renderingSystem.GetSceneObjects().size() + 4;
 	if (!terrain.enabled && !LoadModel("model/sponza.obj")) { return false; }
 	if (!LoadBillboardTexture()) { return false; }
 	Light dirLight;
 	dirLight.type = (float)LightType::Directional;
-	dirLight.direction[0] = 0.18f;
-	dirLight.direction[1] = -0.96f;
+	dirLight.direction[0] = 0.28f;
+	dirLight.direction[1] = -0.06f;
 	dirLight.direction[2] = 0.22f;
+	shadowLightDirection = DirectX::XMFLOAT3(
+		dirLight.direction[0], dirLight.direction[1], dirLight.direction[2]);
 	dirLight.color[0] = 1.0f;
 	dirLight.color[1] = 0.95f;
 	dirLight.color[2] = 0.85f;
@@ -690,8 +692,8 @@ void App::Update()
 		camera.nearZ,
 		camera.farZ
 	);
-	DirectX::XMFLOAT3 shadowLightDirection(0.18f, -0.96f, 0.22f);
-	renderingSystem.UpdateCascades(view, proj, camera.nearZ, camera.farZ, 200.0f, shadowLightDirection);
+	const float shadowDistance = terrain.enabled ? 3000.0f : 200.0f;
+	renderingSystem.UpdateCascades(view, proj, camera.nearZ, camera.farZ, shadowDistance, shadowLightDirection);
 	renderingSystem.UpdateFrustum(view, proj);
 	DirectX::XMFLOAT3 camPos(camera.position.x, camera.position.y, camera.position.z);
 	renderingSystem.CollectVisibleObjects(camPos);
@@ -708,11 +710,10 @@ void App::Update()
 		renderingSystem.GetEyeAdaptationEnabled() ? L"ON" : L"OFF",
 		renderingSystem.GetEyeAdaptationTestEnabled() ? L"ON" : L"OFF",
 		camera.position.x, camera.position.y, camera.position.z);
-	SetWindowText(_hwnd, title);
 	if (terrain.enabled) {
 		swprintf_s(title,L"Terrain | Tiles: %u | Culled nodes: %u | WASD + Space/Shift | Speed: 150 m/s",terrain.visible,terrain.culled);
-		SetWindowText(_hwnd,title);
 	}
+	SetWindowText(_hwnd, title);
 }
 void App::Render()
 {
@@ -728,6 +729,7 @@ void App::Render()
 	for (UINT cascade = 0; cascade < 4; ++cascade)
 	{
 		renderingSystem.SetShadowCascade(commandList.Get(), cascade);
+		commandList->SetPipelineState(renderingSystem.GetShadowPSO());
 		DirectX::XMMATRIX lightViewProj = DirectX::XMLoadFloat4x4(&renderingSystem.GetCascadeMatrix(cascade));
 		for (UINT idx = 0; idx < sceneObjects.size(); ++idx)
 		{
@@ -774,6 +776,11 @@ void App::Render()
 			commandList->IASetIndexBuffer(&indexBufferView);
 			commandList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
 		}
+		if (terrain.enabled)
+		{
+			commandList->SetPipelineState(renderingSystem.GetTerrainShadowPSO());
+			terrain.RenderShadow(commandList.Get(), lightViewProj, cascade);
+		}
 	}
 	renderingSystem.EndShadowPass(commandList.Get());
 	renderingSystem.UpdateParticles(commandList.Get(), 0.016f, time);
@@ -796,6 +803,8 @@ void App::Render()
 		camera.farZ
 	);
 	DirectX::XMMATRIX viewProj = DirectX::XMMatrixMultiply(view, proj);
+	temporalAA.Jitter(proj);
+	viewProj = DirectX::XMMatrixMultiply(view, proj);
 	if (terrain.enabled) terrain.Render(commandList.Get(),view,proj,
 		DirectX::XMFLOAT3(camera.position.x,camera.position.y,camera.position.z));
 	if (indexCount > 0 && cbvHeap)
@@ -843,7 +852,7 @@ void App::Render()
 		float dz = obj.position.z - camPos.z;
 		float distanceSquared = dx * dx + dy * dy + dz * dz;
 
-		if (obj.color.w > 1.5f || distanceSquared < LOD_DISTANCE_THRESHOLD * LOD_DISTANCE_THRESHOLD)
+		if (terrain.enabled || obj.color.w > 1.5f || distanceSquared < LOD_DISTANCE_THRESHOLD * LOD_DISTANCE_THRESHOLD)
 			nearObjects.push_back(idx);
 		else
 			farObjects.push_back(idx);
@@ -1023,6 +1032,8 @@ void App::Render()
 	renderingSystem.EndGeometryPass(commandList.Get());
 	renderingSystem.UpdateLights(commandList.Get());
 	renderingSystem.RenderLightingPass(commandList.Get(), viewProj, camPos);
+	temporalAA.Resolve(commandList.Get(),device.Get(),renderingSystem.GetHDRColorBuffer(),
+		renderingSystem.GetGBuffer()->GetPositionBuffer(),renderingSystem.GetGBuffer()->GetNormalBuffer(),viewProj);
 
 	if (!trailMouseInitialized) 
 	{
@@ -1130,6 +1141,7 @@ void App::ApplyRenderConfig()
 	renderingSystem.SetEyeAdaptationTestEnabled(readBool("PostProcessing", "EyeAdaptationTest", false));
 	renderingSystem.SetMouseTrailEnabled(readBool("PostProcessing", "MouseTrail", true));
 	runtimeHotkeys = readBool("Controls", "RuntimeHotkeys", false);
+	temporalAA.enabled = readBool("PostProcessing", "TAA", true);
 	terrain.enabled = readBool("Terrain", "Enabled", true);
 	terrain.culling = readBool("Terrain", "FrustumCulling", true);
 	terrain.wireframe = readBool("Terrain", "Wireframe", false);
