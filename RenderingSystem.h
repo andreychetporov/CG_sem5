@@ -106,7 +106,6 @@ public:
 	bool GetEyeAdaptationTestEnabled() const { return eyeAdaptationTestEnabled; }
 	bool GetMouseTrailEnabled() const { return mouseTrailEnabled; }
 	GBuffer* GetGBuffer() { return &gBuffer; }
-	ID3D12Resource* GetHDRColorBuffer() const { return hdrColorBuffer.Get(); }
 	bool InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount, bool terrainDemo = false);
 	void BuildOctree();
 	void UpdateFrustum(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection);
