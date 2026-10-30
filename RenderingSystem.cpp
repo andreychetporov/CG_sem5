@@ -1230,7 +1230,16 @@ bool RenderingSystem::CreateShadowPass(ID3D12Device* device)
 	psoDesc.NumRenderTargets = 0;
 	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 	psoDesc.SampleDesc.Count = 1;
-	return SUCCEEDED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowPSO)));
+	if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowPSO))))
+		return false;
+
+	D3D12_INPUT_ELEMENT_DESC terrainLayout = {
+		"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+		D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0
+	};
+	psoDesc.InputLayout = { &terrainLayout, 1 };
+	psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+	return SUCCEEDED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&terrainShadowPSO)));
 }
 void RenderingSystem::UpdateCascades(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection,
 	float cameraNear, float cameraFar, float shadowDistance, const DirectX::XMFLOAT3& lightDirection)
@@ -1524,7 +1533,6 @@ void RenderingSystem::RenderPostProcessing(ID3D12GraphicsCommandList* commandLis
 	eyeConstants.tileCountX = luminanceTileCountX;
 	eyeConstants.tileCount = luminanceTileCountX * luminanceTileCountY;
 	eyeConstants.deltaTime = deltaTime;
-	// Slow enough that the transition is visible for several seconds.
 	eyeConstants.brightenSpeed = 0.65f;
 	eyeConstants.darkenSpeed = 0.30f;
 	eyeConstants.resetAdaptation = resetEyeAdaptation ? 1u : 0u;
@@ -1755,7 +1763,7 @@ void RenderingSystem::Resize(ID3D12Device* device, UINT width, UINT height)
 	gBuffer.Resize(device, width, height);
 	CreatePostProcessTargets(device, width, height);
 }
-bool RenderingSystem::InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount)
+bool RenderingSystem::InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount, bool terrainDemo)
 {
 	using namespace DirectX;
 	Scene::Aabb spawnRegion;
@@ -1774,6 +1782,17 @@ bool RenderingSystem::InitializeScene(ID3D12Device* device, UINT cubeCount, UINT
 		DirectX::XMMatrixTranslation(0.0f, 0.75f, 0.0f);
 	centerCube.worldBounds = Scene::TransformAabb(centerCube.localBounds, centerWorld);
 	sceneObjects.push_back(centerCube);
+	if (terrainDemo)
+	{
+		// Shadow demonstration cube near the terrain's starting camera.
+		Scene::SceneObject shadowCube = centerCube;
+		shadowCube.position = XMFLOAT3(0.0f, 250.0f, -650.0f);
+		shadowCube.uniformScale = 80.0f;
+		XMMATRIX world = XMMatrixScaling(80.0f, 80.0f, 80.0f) *
+			XMMatrixTranslation(0.0f, 250.0f, -650.0f);
+		shadowCube.worldBounds = Scene::TransformAabb(shadowCube.localBounds, world);
+		sceneObjects.push_back(shadowCube);
+	}
 	Scene::ProceduralMesh testSourceMesh;
 	Scene::BuildUvSphere(testSourceMesh, 12, 18, 0.5f);
 	Scene::SceneObject testSource;

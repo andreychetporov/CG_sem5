@@ -75,6 +75,7 @@ private:
 	void Update();
 	void Render();
 	void UpdateCamera(float deltaTime);
+	DirectX::XMFLOAT3 shadowLightDirection;
 private:
 	HWND _hwnd;
 	int _width;

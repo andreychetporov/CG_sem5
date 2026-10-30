@@ -73,6 +73,7 @@ public:
 	ID3D12PipelineState* GetBillboardPSO() const { return billboardPSO.Get(); }
 	ID3D12RootSignature* GetShadowRootSignature() const { return shadowRootSignature.Get(); }
 	ID3D12PipelineState* GetShadowPSO() const { return shadowPSO.Get(); }
+	ID3D12PipelineState* GetTerrainShadowPSO() const { return terrainShadowPSO.Get(); }
 	void UpdateCascades(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection,
 		float cameraNear, float cameraFar, float shadowDistance, const DirectX::XMFLOAT3& lightDirection);
 	void BeginShadowPass(ID3D12GraphicsCommandList* commandList);
@@ -105,7 +106,7 @@ public:
 	bool GetEyeAdaptationTestEnabled() const { return eyeAdaptationTestEnabled; }
 	bool GetMouseTrailEnabled() const { return mouseTrailEnabled; }
 	GBuffer* GetGBuffer() { return &gBuffer; }
-	bool InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount);
+	bool InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount, bool terrainDemo = false);
 	void BuildOctree();
 	void UpdateFrustum(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection);
 	void CollectVisibleObjects(const DirectX::XMFLOAT3& cameraPos);
@@ -158,6 +159,7 @@ private:
 	ComPtr<ID3D12PipelineState> skyboxPSO;
 	bool skyboxEnabled = true;
 	ComPtr<ID3D12RootSignature> shadowRootSignature;
+	ComPtr<ID3D12PipelineState> terrainShadowPSO;
 	ComPtr<ID3D12PipelineState> shadowPSO;
 	ComPtr<ID3DBlob> geometryVS;
 	ComPtr<ID3DBlob> geometryPS;
