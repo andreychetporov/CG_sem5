@@ -173,6 +173,7 @@
     </None>
     <None Include="Terrain.hlsl" />
     <None Include="TAA.hlsl" />
+    <None Include="Atmosphere.hlsli" />
     <None Include="Skybox.hlsl">
       <FileType>Document</FileType>
     </None>

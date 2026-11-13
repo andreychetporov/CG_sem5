@@ -79,8 +79,13 @@ private:
 	void Update();
 	bool Render();
 	void UpdateCamera(float deltaTime);
+	void UpdateAtmosphere(float deltaTime);
 	bool ResizeFrame(UINT width, UINT height);
 	DirectX::XMFLOAT3 shadowLightDirection;
+	float sunAzimuth = 0.28f, sunElevation = 0.32f;
+	float atmospherePollutionTarget = 0.0f;
+	float atmospherePollution = 0.0f;
+	float atmosphereMieMultiplier = 1.0f;
 private:
 	HWND _hwnd;
 	int _width;

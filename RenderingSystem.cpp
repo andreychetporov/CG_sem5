@@ -1494,7 +1494,7 @@ void RenderingSystem::RenderLightingPass(ID3D12GraphicsCommandList* commandList,
 	commandList->SetGraphicsRootDescriptorTable(1, environmentHandle);
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	commandList->IASetVertexBuffers(0, 0, nullptr);
-	if (skyboxEnabled)
+	if (skyboxEnabled && !atmosphere.enabled)
 		commandList->DrawInstanced(4, 1, 0, 0);
 	commandList->SetGraphicsRootSignature(lightingRootSignature.Get());
 	commandList->SetPipelineState(lightingPSO.Get());
@@ -1657,7 +1657,7 @@ void RenderingSystem::RenderPostProcessing(ID3D12GraphicsCommandList* commandLis
 	postConstants.maxBlurRadius = maxBlurRadius;
 	postConstants.manualExposure = manualExposure;
 	postConstants.depthOfFieldEnabled = depthOfFieldEnabled ? 1 : 0;
-	postConstants.eyeAdaptationEnabled = eyeAdaptationEnabled ? 1 : 0;
+	postConstants.eyeAdaptationEnabled = eyeAdaptationEnabled && !atmosphere.enabled ? 1 : 0;
 	postConstants.exposureKey = exposureKey;
 	postConstants.gamma = 2.2f;
 	postConstants.mouseTrailEnabled = mouseTrailEnabled ? 1 : 0;
@@ -1698,13 +1698,23 @@ void RenderingSystem::ClearLights()
 {
 	lights.clear();
 }
-void RenderingSystem::UpdateLights(ID3D12GraphicsCommandList* commandList)
+void RenderingSystem::SetSunDirection(const DirectX::XMFLOAT3& towardSun)
+{
+	atmosphere.sunDirection = towardSun;
+	if (!lights.empty() && lights.front().type == (float)LightType::Directional)
+	{
+		lights.front().direction[0] = -towardSun.x;
+		lights.front().direction[1] = -towardSun.y;
+		lights.front().direction[2] = -towardSun.z;
+	}
+}
+void RenderingSystem::UpdateLights(const DirectX::XMMATRIX& viewProjection)
 {
 	if (!lights.empty())
 	{
 		memcpy(lightBufferMapped, lights.data(), sizeof(Light) * lights.size());
 	}
-	LightingConstants constants;
+	LightingConstants constants = {};
 	constants.cameraPosition[0] = cameraPosition[0];
 	constants.cameraPosition[1] = cameraPosition[1];
 	constants.cameraPosition[2] = cameraPosition[2];
@@ -1736,6 +1746,13 @@ void RenderingSystem::UpdateLights(ID3D12GraphicsCommandList* commandList)
 	constants.testLightPadding[0] = 0.0f;
 	constants.testLightPadding[1] = 0.0f;
 	constants.testLightPadding[2] = 0.0f;
+	DirectX::XMStoreFloat4x4(&constants.inverseViewProjection,
+		DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, viewProjection)));
+	constants.atmosphereSunDirection = atmosphere.sunDirection;
+	constants.atmosphereEnabled = atmosphere.enabled ? 1 : 0;
+	constants.rayleighScale = atmosphere.rayleigh;
+	constants.mieScale = atmosphere.mie;
+	constants.aerialPerspectiveEnabled = atmosphere.aerialPerspective ? 1 : 0;
 	memcpy(lightingCBMapped, &constants, sizeof(LightingConstants));
 }
 void RenderingSystem::SetCameraPosition(float x, float y, float z)

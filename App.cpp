@@ -162,6 +162,7 @@ bool App::InitD3D()
 		if (!terrain.Initialize(device.Get(), commandQueue.Get())) { MessageBoxA(nullptr,"Terrain initialization failed", "Terrain",MB_OK); return false; }
 		camera.position=Vec3(0,460,-1100);
 		cameraYaw=0.0f; cameraPitch=atan2f(250.0f - camera.position.y, -650.0f - camera.position.z);
+		if (renderingSystem.atmosphere.enabled) cameraPitch = -0.23f; // Frame sky, distant terrain and demo cube.
 	}
 	if (!renderingSystem.InitializeScene(device.Get(), 0, 0, terrain.enabled)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
@@ -745,6 +746,7 @@ void App::Update()
 	time += deltaTime;
 	if (animateTAACube) taaCubeTime += deltaTime;
 	UpdateCamera(deltaTime);
+	UpdateAtmosphere(deltaTime);
 	renderingSystem.SetCameraPosition(camera.position.x, camera.position.y, camera.position.z);
 	DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
 		DirectX::XMVectorSet(camera.position.x, camera.position.y, camera.position.z, 0.0f),
@@ -784,6 +786,14 @@ void App::Update()
 	if (!temporalAA.reproject) caption += L" | No reprojection";
 	if (!temporalAA.protectHistory) caption += L" | No history protection";
 	if (!animateTAACube) caption += L" | Cube paused";
+	const auto& air = renderingSystem.atmosphere;
+	if (air.enabled) {
+		wchar_t airStatus[120];
+		swprintf_s(airStatus, L" | Air %s / R %.2f M %.2f | Haze %s | Sun %.0f deg",
+			atmospherePollutionTarget > 0.5f ? L"dirty" : L"clean", air.rayleigh, air.mie,
+			air.aerialPerspective ? L"ON" : L"OFF", sunElevation * 57.29578f);
+		caption += airStatus;
+	}
 	const auto now = GetTickCount64();
 	if (caption != lastCaption && now - lastCaptionUpdate >= 200) {
 		SetWindowText(_hwnd, caption.c_str());
@@ -1117,7 +1127,7 @@ bool App::Render()
 	DirectX::XMStoreFloat3(&particleUp, particleUpVector);
 	if (!terrain.enabled) renderingSystem.RenderParticles(commandList.Get(), viewProj, particleRight, particleUp);
 	renderingSystem.EndGeometryPass(commandList.Get());
-	renderingSystem.UpdateLights(commandList.Get());
+	renderingSystem.UpdateLights(viewProj);
 	renderingSystem.RenderLightingPass(commandList.Get(), viewProj, camPos);
 	temporalAA.Resolve(commandList.Get(),device.Get(),renderingSystem.GetHDRColorBuffer(),
 		renderingSystem.GetGBuffer()->GetPositionBuffer(),renderingSystem.GetGBuffer()->GetNormalBuffer(),
@@ -1163,6 +1173,9 @@ void App::OnKeyDown(WPARAM key)
 	{
 		switch (key)
 		{
+		case 'N': renderingSystem.atmosphere.enabled = !renderingSystem.atmosphere.enabled; temporalAA.ResetHistory(); return;
+		case 'P': atmospherePollutionTarget = 1.0f - atmospherePollutionTarget; atmosphereMieMultiplier = 1.0f; temporalAA.ResetHistory(); return;
+		case 'O': renderingSystem.atmosphere.aerialPerspective = !renderingSystem.atmosphere.aerialPerspective; temporalAA.ResetHistory(); return;
 		case 'T': temporalAA.enabled = !temporalAA.enabled; temporalAA.ResetHistory(); return;
 		case 'M': temporalAA.showMotion = !temporalAA.showMotion; temporalAA.ResetHistory(); return;
 		case 'H': temporalAA.protectHistory = !temporalAA.protectHistory; temporalAA.ResetHistory(); return;
@@ -1261,6 +1274,9 @@ void App::ApplyRenderConfig()
 	renderingSystem.SetMouseTrailEnabled(readBool("PostProcessing", "MouseTrail", true));
 	runtimeHotkeys = readBool("Controls", "RuntimeHotkeys", false);
 	temporalAA.enabled = readBool("PostProcessing", "TAA", true);
+	renderingSystem.atmosphere.enabled = readBool("Atmosphere", "Enabled", true);
+	renderingSystem.atmosphere.aerialPerspective = readBool("Atmosphere", "AerialPerspective", true);
+	atmospherePollutionTarget = atmospherePollution = readBool("Atmosphere", "Dirty", false) ? 1.0f : 0.0f;
 	terrain.enabled = readBool("Terrain", "Enabled", true);
 	terrain.culling = readBool("Terrain", "FrustumCulling", true);
 	terrain.wireframe = readBool("Terrain", "Wireframe", false);
@@ -1301,6 +1317,37 @@ void App::OnFocusLost()
 	for (bool& key : keys) key = false;
 	mousePressed = false;
 	if (GetCapture() == _hwnd) ReleaseCapture();
+}
+void App::UpdateAtmosphere(float deltaTime)
+{
+	const auto clampValue = [](float value, float low, float high) {
+		return (std::min)((std::max)(value, low), high);
+	};
+	auto& air = renderingSystem.atmosphere;
+	const float oldRayleigh = air.rayleigh, oldMie = air.mie;
+	const float oldAzimuth = sunAzimuth, oldElevation = sunElevation;
+	sunAzimuth += (float(keys[VK_RIGHT]) - float(keys[VK_LEFT])) * deltaTime;
+	sunElevation = clampValue(sunElevation + (float(keys[VK_UP]) - float(keys[VK_DOWN])) * deltaTime * 0.6f, 0.025f, 1.5f);
+	air.rayleigh = clampValue(air.rayleigh + (float(keys[VK_OEM_6]) - float(keys[VK_OEM_4])) * deltaTime, 0.0f, 4.0f);
+	atmosphereMieMultiplier = clampValue(atmosphereMieMultiplier +
+		(float(keys[VK_OEM_PLUS]) - float(keys[VK_OEM_MINUS])) * deltaTime, 0.0f, 4.0f);
+	const float pollutionStep = deltaTime * 1.8f;
+	atmospherePollution += clampValue(atmospherePollutionTarget - atmospherePollution, -pollutionStep, pollutionStep);
+	air.mie = (1.0f + 31.0f * atmospherePollution) * atmosphereMieMultiplier;
+	const float horizontal = cosf(sunElevation);
+	if (air.enabled)
+	{
+		const DirectX::XMFLOAT3 towardSun(sinf(sunAzimuth) * horizontal, sinf(sunElevation), cosf(sunAzimuth) * horizontal);
+		renderingSystem.SetSunDirection(towardSun);
+		shadowLightDirection = {-towardSun.x, -towardSun.y, -towardSun.z};
+		if (oldRayleigh != air.rayleigh || oldMie != air.mie || oldAzimuth != sunAzimuth || oldElevation != sunElevation)
+			temporalAA.ResetHistory();
+	}
+	else
+	{
+		shadowLightDirection = {0.28f, -0.06f, 0.22f};
+		renderingSystem.SetSunDirection({-0.28f, 0.06f, -0.22f});
+	}
 }
 void App::UpdateCamera(float deltaTime)
 {

@@ -34,7 +34,16 @@ cbuffer LightingConstants : register(b0)
     float testLightIntensity;
     float testLightRange;
     float3 testLightPadding;
+    float4x4 inverseViewProjection;
+    float3 atmosphereSunDirection;
+    int atmosphereEnabled;
+    float rayleighScale;
+    float mieScale;
+    int aerialPerspectiveEnabled;
+    float atmospherePadding;
 }
+
+#include "Atmosphere.hlsli"
 
 StructuredBuffer<Light> lights : register(t0);
 Texture2D positionTexture : register(t1);
@@ -222,8 +231,19 @@ float4 PSMain(VertexOutput input) : SV_TARGET
     float3 normal = normalize(normalData.xyz);
     float4 albedo = albedoTexture.Sample(gSampler, input.texCoord);
 
+    const float3 betaR = float3(0.0058, 0.0135, 0.0331) * rayleighScale;
+    const float betaM = 0.004 * mieScale;
     if (albedo.a < 0.01f)
-        discard;
+    {
+        if (atmosphereEnabled == 0 || debugMode != 0.0)
+            discard;
+        float2 ndc = input.texCoord * float2(2.0, -2.0) + float2(-1.0, 1.0);
+        float4 worldFar = mul(float4(ndc, 1.0, 1.0), inverseViewProjection);
+        float3 ray = normalize(worldFar.xyz / worldFar.w - cameraPosition);
+        float3 transmission;
+        return float4(IntegrateAtmosphere(AtmosphereOrigin(cameraPosition), ray, 1e9, true,
+            atmosphereSunDirection, betaR, betaM, transmission), 1.0);
+    }
 
     if (debugMode == 1.0f)
         return float4(worldPos * 0.1f, 1.0f);
@@ -248,8 +268,6 @@ float4 PSMain(VertexOutput input) : SV_TARGET
     }
 
     float testSourceMask = step(1.5f, normalData.w);
-    if (testLightEnabled > 0.5f && testSourceMask > 0.5f)
-        return float4(testLightColor * testLightIntensity, 1.0f);
 
     for (int i = 0; i < numLights; i++)
     {
@@ -270,7 +288,10 @@ float4 PSMain(VertexOutput input) : SV_TARGET
             lightDir = toLight / max(distanceToLight, 0.0001f);
             attenuation = pow(saturate(1.0f - distanceToLight / light.range), 2.0f);
         }
-        lighting += EvaluatePBR(normal, viewDir, lightDir, light.color * light.intensity * attenuation,
+        float3 lightRadiance = light.color * light.intensity * attenuation;
+        if (i == 0 && light.type == 0.0 && atmosphereEnabled != 0)
+            lightRadiance *= SunTransmittance(AtmosphereOrigin(worldPos), atmosphereSunDirection, betaR, betaM);
+        lighting += EvaluatePBR(normal, viewDir, lightDir, lightRadiance,
             albedo.rgb, roughness);
     }
 
@@ -293,5 +314,17 @@ float4 PSMain(VertexOutput input) : SV_TARGET
     float2 brdf = brdfIntegrationMap.Sample(gSampler, float2(nDotV, roughness));
     float3 specularIBL = prefiltered * (F * brdf.x + brdf.y);
     lighting += (1.0f - F) * (1.0f - metallic) * diffuseIBL + specularIBL;
+    if (testLightEnabled > 0.5f && testSourceMask > 0.5f)
+        lighting = testLightColor * testLightIntensity;
+    if (atmosphereEnabled != 0 && aerialPerspectiveEnabled != 0)
+    {
+        float3 segment = worldPos - cameraPosition;
+        float distanceMetres = length(segment);
+        float3 transmission;
+        float3 inScatter = IntegrateAtmosphere(AtmosphereOrigin(cameraPosition),
+            segment / max(distanceMetres, 0.001), distanceMetres * 0.001, false,
+            atmosphereSunDirection, betaR, betaM, transmission);
+        lighting = lighting * transmission + inScatter;
+    }
     return float4(lighting, 1.0f);
 }

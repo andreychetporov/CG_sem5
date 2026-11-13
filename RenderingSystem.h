@@ -44,6 +44,23 @@ struct LightingConstants
 	float testLightIntensity;
 	float testLightRange;
 	float testLightPadding[3];
+	DirectX::XMFLOAT4X4 inverseViewProjection;
+	DirectX::XMFLOAT3 atmosphereSunDirection;
+	int atmosphereEnabled;
+	float rayleighScale;
+	float mieScale;
+	int aerialPerspectiveEnabled;
+	float atmospherePadding;
+};
+static_assert(sizeof(LightingConstants) == 464, "LightingConstants HLSL layout");
+
+struct AtmosphereSettings
+{
+	bool enabled = true;
+	bool aerialPerspective = true;
+	float rayleigh = 1.0f;
+	float mie = 1.0f;
+	DirectX::XMFLOAT3 sunDirection{0.0f, 0.3f, 0.954f};
 };
 class RenderingSystem
 {
@@ -61,7 +78,9 @@ public:
 		const DirectX::XMFLOAT2& previousMouseUV, bool mouseMoved);
 	void AddLight(const Light& light);
 	void ClearLights();
-	void UpdateLights(ID3D12GraphicsCommandList* commandList);
+	void UpdateLights(const DirectX::XMMATRIX& viewProjection);
+	void SetSunDirection(const DirectX::XMFLOAT3& towardSun);
+	AtmosphereSettings atmosphere;
 	ID3D12RootSignature* GetGeometryRootSignature() const { return geometryRootSignature.Get(); }
 	ID3D12PipelineState* GetGeometryPSO() const { return geometryPSO.Get(); }
 	ID3D12RootSignature* GetProceduralRootSignature() const { return proceduralRootSignature.Get(); }
