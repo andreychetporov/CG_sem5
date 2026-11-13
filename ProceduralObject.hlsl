@@ -13,6 +13,7 @@ struct VertexOutput
     float3 worldPos : TEXCOORD0;
     float3 normal : NORMAL;
     float4 color : COLOR;
+    nointerpolation float objectId : TEXCOORD1;
 };
 
 struct PixelOutput
@@ -27,6 +28,7 @@ cbuffer PerObjectCB : register(b0)
     float4x4 worldViewProj;
     float4x4 world;
     float4 color;
+    float objectId;
 }
 
 VertexOutput VSMain(VertexInput input)
@@ -37,6 +39,7 @@ VertexOutput VSMain(VertexInput input)
     output.worldPos = mul(float4(input.position, 1.0f), world).xyz;
     output.normal = normalize(mul(input.normal, (float3x3)world));
     output.color = color;
+    output.objectId = objectId;
 
     return output;
 }
@@ -45,7 +48,7 @@ PixelOutput PSMain(VertexOutput input)
 {
     PixelOutput output;
 
-    output.position = float4(input.worldPos, 1.0f);
+    output.position = float4(input.worldPos, input.objectId);
     // color.a is a material marker. Values above 1 identify the HDR test source.
     output.normal = float4(normalize(input.normal), input.color.a);
 

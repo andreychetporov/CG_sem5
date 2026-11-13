@@ -198,8 +198,8 @@ public:
         }
     }
 
-    void Render(ID3D12GraphicsCommandList* cmd, const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection, const DirectX::XMFLOAT3& eye) {
-        Scene::Frustum frustum; frustum.FromViewAndProjection(view, projection); std::vector<int> selected; culled = 0; Select(0, frustum, eye, selected); visible = (UINT)selected.size();
+    void Render(ID3D12GraphicsCommandList* cmd, const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& cullingProjection, const DirectX::XMMATRIX& projection, const DirectX::XMFLOAT3& eye) {
+        Scene::Frustum frustum; frustum.FromViewAndProjection(view, cullingProjection); std::vector<int> selected; culled = 0; Select(0, frustum, eye, selected); visible = (UINT)selected.size();
         D3D12_VERTEX_BUFFER_VIEW vertexView = {vb->GetGPUVirtualAddress(), (UINT)(nodes.size() * VerticesPerNode * sizeof(Vertex)), sizeof(Vertex)}; D3D12_INDEX_BUFFER_VIEW indexView = {ib->GetGPUVirtualAddress(), indexCount * sizeof(UINT), DXGI_FORMAT_R32_UINT};
         cmd->SetGraphicsRootSignature(root.Get()); cmd->SetPipelineState(wireframe ? wire.Get() : solid.Get()); cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); cmd->IASetVertexBuffers(0, 1, &vertexView); cmd->IASetIndexBuffer(&indexView);
         struct Constants { DirectX::XMFLOAT4X4 vp; float lod, debug, pad[2]; } constants = {}; DirectX::XMStoreFloat4x4(&constants.vp, DirectX::XMMatrixTranspose(view * projection));

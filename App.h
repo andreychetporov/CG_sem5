@@ -42,6 +42,7 @@ struct SimpleObjectConstants
 	float worldViewProj[16];
 	float world[16];
 	float color[4];
+	float objectId;
 };
 class App
 {
@@ -54,6 +55,8 @@ public:
 	void OnMouseMove(int x, int y);
 	void OnMouseDown(int x, int y);
 	void OnMouseUp();
+	void OnFocusLost();
+	void OnResize(UINT width, UINT height);
 private:
 	bool InitWindow(HINSTANCE hInstance, int nCmdShow);
 	bool InitD3D();
@@ -74,8 +77,9 @@ private:
 	bool LoadModel(const char* filename);
 	void ApplyRenderConfig();
 	void Update();
-	void Render();
+	bool Render();
 	void UpdateCamera(float deltaTime);
+	bool ResizeFrame(UINT width, UINT height);
 	DirectX::XMFLOAT3 shadowLightDirection;
 private:
 	HWND _hwnd;
@@ -130,6 +134,12 @@ private:
 	RenderingSystem renderingSystem;
 	Terrain terrain;
 	TemporalAA temporalAA;
+	UINT pendingWidth = 0, pendingHeight = 0;
+	bool resizePending = false, minimized = false;
+	std::wstring lastCaption;
+	ULONGLONG lastCaptionUpdate = 0;
+	bool animateTAACube = true, alternateTAACamera = false;
+	float taaCubeTime = 0.0f;
 	Camera camera;
 	float time;
 	bool keys[256];

@@ -37,8 +37,30 @@ int App::Run()
 			DispatchMessage(&msg);
 		}
 		else {
+			if (minimized) { WaitMessage(); continue; }
+			const UINT64 completed = fence->GetCompletedValue();
+			if (completed == UINT64_MAX) {
+				MessageBoxA(_hwnd, "The graphics device stopped responding.", "Direct3D 12", MB_OK | MB_ICONERROR);
+				return 1;
+			}
+			if (completed < fenceValue) {
+				// Keep dispatching window messages while the previous frame owns
+				// the shared command allocator, resources and upload buffers.
+				MsgWaitForMultipleObjectsEx(0, nullptr, 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+				continue;
+			}
+			if (resizePending) {
+				resizePending = false;
+				if (!ResizeFrame(pendingWidth, pendingHeight)) {
+					MessageBoxA(_hwnd, "Could not resize rendering resources.", "Resize", MB_OK | MB_ICONERROR);
+					return 1;
+				}
+			}
 			Update();
-			Render();
+			if (!Render()) {
+				MessageBoxA(_hwnd, "Could not submit or present the frame.", "Direct3D 12", MB_OK | MB_ICONERROR);
+				return 1;
+			}
 		}
 	}
 	return static_cast<int>(msg.wParam);
@@ -55,19 +77,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 	}
 	if (app) {
 		switch (msg) {
+		case WM_SIZE:
+			app->OnResize(LOWORD(lParam), HIWORD(lParam));
+			return 0;
 		case WM_KEYDOWN:
 			app->OnKeyDown(wParam);
 			return 0;
 		case WM_KEYUP:
 			app->OnKeyUp(wParam);
 			return 0;
+		case WM_KILLFOCUS:
+			app->OnFocusLost();
+			break;
 		case WM_MOUSEMOVE:
 			app->OnMouseMove(LOWORD(lParam), HIWORD(lParam));
 			return 0;
 		case WM_LBUTTONDOWN:
+			SetFocus(hwnd);
+			SetCapture(hwnd);
 			app->OnMouseDown(LOWORD(lParam), HIWORD(lParam));
 			return 0;
 		case WM_LBUTTONUP:
+			app->OnMouseUp();
+			ReleaseCapture();
+			return 0;
+		case WM_CAPTURECHANGED:
 			app->OnMouseUp();
 			return 0;
 		case WM_DESTROY:
@@ -89,6 +123,11 @@ bool App::InitWindow(HINSTANCE hInstance, int nCmdShow)
 	if (!RegisterClassEx(&wc)) { return false; }
 	_hwnd = CreateWindow(WINDOW_CLASS_NAME, WINDOW_TITLE, WS_OVERLAPPEDWINDOW, 0, 0, _width, _height, nullptr, nullptr, hInstance, this);
 	if (_hwnd == nullptr) { return false; }
+	RECT client = {};
+	if (!GetClientRect(_hwnd, &client)) return false;
+	_width = client.right;
+	_height = client.bottom;
+	camera.aspect = (float)_width / _height;
 	ShowWindow(_hwnd, nCmdShow);
 	UpdateWindow(_hwnd);
 	return true;
@@ -122,7 +161,7 @@ bool App::InitD3D()
 	{
 		if (!terrain.Initialize(device.Get(), commandQueue.Get())) { MessageBoxA(nullptr,"Terrain initialization failed", "Terrain",MB_OK); return false; }
 		camera.position=Vec3(0,460,-1100);
-		cameraYaw=0.0f; cameraPitch=-0.15f;
+		cameraYaw=0.0f; cameraPitch=atan2f(250.0f - camera.position.y, -650.0f - camera.position.z);
 	}
 	if (!renderingSystem.InitializeScene(device.Get(), 0, 0, terrain.enabled)) { return false; }
 	if (!CreateConstantBuffer()) { return false; }
@@ -143,8 +182,8 @@ bool App::InitD3D()
 	renderingSystem.AddLight(dirLight);
 	viewport.TopLeftX = 0;
 	viewport.TopLeftY = 0;
-	viewport.Height = _height;
-	viewport.Width = _width;
+	viewport.Height = (float)_height;
+	viewport.Width = (float)_width;
 	viewport.MinDepth = 0.f;
 	viewport.MaxDepth = 1.f;
 	scissorRect.left = 0;
@@ -152,6 +191,31 @@ bool App::InitD3D()
 	scissorRect.right = _width;
 	scissorRect.bottom = _height;
 	return true;
+}
+void App::OnResize(UINT width, UINT height)
+{
+	minimized = width == 0 || height == 0;
+	if (minimized) return;
+	pendingWidth = width;
+	pendingHeight = height;
+	resizePending = true;
+}
+bool App::ResizeFrame(UINT width, UINT height)
+{
+	if (width == (UINT)_width && height == (UINT)_height) return true;
+	for (auto& buffer : swapChainBuffers) buffer.Reset();
+	if (FAILED(swapChain->ResizeBuffers(FRAME_COUNT, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0)))
+		return false;
+	_width = width;
+	_height = height;
+	camera.aspect = (float)width / height;
+	viewport.Width = (float)width;
+	viewport.Height = (float)height;
+	scissorRect.right = width;
+	scissorRect.bottom = height;
+	trailMouseInitialized = false;
+	return CreateRTV() && CreateDepthBuffer() && renderingSystem.Resize(device.Get(), width, height)
+		&& temporalAA.Initialize(device.Get(), width, height);
 }
 bool App::CreateSwapChain()
 {
@@ -679,6 +743,7 @@ void App::Update()
 {
 	float deltaTime = 0.016f;
 	time += deltaTime;
+	if (animateTAACube) taaCubeTime += deltaTime;
 	UpdateCamera(deltaTime);
 	renderingSystem.SetCameraPosition(camera.position.x, camera.position.y, camera.position.z);
 	DirectX::XMMATRIX view = DirectX::XMMatrixLookAtLH(
@@ -713,16 +778,35 @@ void App::Update()
 	if (terrain.enabled) {
 		swprintf_s(title,L"Terrain | Tiles: %u | Culled nodes: %u | WASD + Space/Shift | Speed: 150 m/s",terrain.visible,terrain.culled);
 	}
-	SetWindowText(_hwnd, title);
+	std::wstring caption = title;
+	caption += temporalAA.enabled ? L" | TAA ON" : L" | TAA OFF";
+	if (temporalAA.showMotion) caption += L" | Motion vectors";
+	if (!temporalAA.reproject) caption += L" | No reprojection";
+	if (!temporalAA.protectHistory) caption += L" | No history protection";
+	if (!animateTAACube) caption += L" | Cube paused";
+	const auto now = GetTickCount64();
+	if (caption != lastCaption && now - lastCaptionUpdate >= 200) {
+		SetWindowText(_hwnd, caption.c_str());
+		lastCaption = caption;
+		lastCaptionUpdate = now;
+	}
 }
-void App::Render()
+bool App::Render()
 {
 	UINT backBufferIndex = swapChain->GetCurrentBackBufferIndex();
-	FlushCommandQueue();
-	commandAllocator->Reset();
-	commandList->Reset(commandAllocator.Get(), renderingSystem.GetShadowPSO());
+	if (FAILED(commandAllocator->Reset()) ||
+		FAILED(commandList->Reset(commandAllocator.Get(), renderingSystem.GetShadowPSO())))
+		return false;
 	CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(rtvHeap->GetCPUDescriptorHandleForHeapStart(), backBufferIndex, sizeRTVHeap);
 	const auto& sceneObjects = renderingSystem.GetSceneObjects();
+	// InitializeScene inserts the terrain demonstration cube after the center cube.
+	const UINT demoIndex = terrain.enabled ? 1u : 0u;
+	const auto objectWorld = [&](UINT idx) {
+		const auto& obj = sceneObjects[idx];
+		const float offset = idx == demoIndex ? sinf(taaCubeTime * 0.85f) * (terrain.enabled ? 145.0f : 2.0f) : 0.0f;
+		return DirectX::XMMatrixScaling(obj.uniformScale, obj.uniformScale, obj.uniformScale) *
+			DirectX::XMMatrixTranslation(obj.position.x + offset, obj.position.y, obj.position.z);
+	};
 	UINT alignedSize = (sizeof(SimpleObjectConstants) + 255) & ~255;
 	renderingSystem.BeginShadowPass(commandList.Get());
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -734,8 +818,7 @@ void App::Render()
 		for (UINT idx = 0; idx < sceneObjects.size(); ++idx)
 		{
 			const Scene::SceneObject& obj = sceneObjects[idx];
-			DirectX::XMMATRIX world = DirectX::XMMatrixScaling(obj.uniformScale, obj.uniformScale, obj.uniformScale) *
-				DirectX::XMMatrixTranslation(obj.position.x, obj.position.y, obj.position.z);
+			DirectX::XMMATRIX world = objectWorld(idx);
 			DirectX::XMMATRIX worldLightViewProj = DirectX::XMMatrixMultiply(world, lightViewProj);
 			SimpleObjectConstants constants = {};
 			DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(constants.worldViewProj),
@@ -802,10 +885,11 @@ void App::Render()
 		camera.nearZ,
 		camera.farZ
 	);
-	DirectX::XMMATRIX viewProj = DirectX::XMMatrixMultiply(view, proj);
-	temporalAA.Jitter(proj);
-	viewProj = DirectX::XMMatrixMultiply(view, proj);
-	if (terrain.enabled) terrain.Render(commandList.Get(),view,proj,
+	const DirectX::XMMATRIX unjitteredVP = view * proj;
+	DirectX::XMMATRIX jitteredProjection = proj;
+	temporalAA.Jitter(jitteredProjection);
+	const DirectX::XMMATRIX viewProj = view * jitteredProjection;
+	if (terrain.enabled) terrain.Render(commandList.Get(),view,proj,jitteredProjection,
 		DirectX::XMFLOAT3(camera.position.x,camera.position.y,camera.position.z));
 	if (indexCount > 0 && cbvHeap)
 	{
@@ -846,6 +930,7 @@ void App::Render()
 
 	for (uint32_t idx : visibleIndices)
 	{
+		if (idx == demoIndex) continue;
 		const Scene::SceneObject& obj = sceneObjects[idx];
 		float dx = obj.position.x - camPos.x;
 		float dy = obj.position.y - camPos.y;
@@ -857,6 +942,9 @@ void App::Render()
 		else
 			farObjects.push_back(idx);
 	}
+	// The moving cube's static octree bounds no longer describe its location.
+	// Submit this one object directly; the GPU still clips it to the viewport.
+	nearObjects.push_back(demoIndex);
 
 	commandList->SetGraphicsRootSignature(renderingSystem.GetProceduralRootSignature());
 	commandList->SetPipelineState(renderingSystem.GetProceduralPSO());
@@ -864,9 +952,7 @@ void App::Render()
 	for (uint32_t idx : nearObjects)
 	{
 		const Scene::SceneObject& obj = sceneObjects[idx];
-		DirectX::XMMATRIX scale = DirectX::XMMatrixScaling(obj.uniformScale, obj.uniformScale, obj.uniformScale);
-		DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(obj.position.x, obj.position.y, obj.position.z);
-		DirectX::XMMATRIX world = DirectX::XMMatrixMultiply(scale, translation);
+		DirectX::XMMATRIX world = objectWorld(idx);
 		DirectX::XMMATRIX worldViewProj = DirectX::XMMatrixMultiply(world, viewProj);
 		SimpleObjectConstants objConstants;
 		DirectX::XMStoreFloat4x4((DirectX::XMFLOAT4X4*)objConstants.worldViewProj, DirectX::XMMatrixTranspose(worldViewProj));
@@ -875,6 +961,7 @@ void App::Render()
 		objConstants.color[1] = obj.color.y;
 		objConstants.color[2] = obj.color.z;
 		objConstants.color[3] = obj.color.w;
+		objConstants.objectId = idx == demoIndex ? 2.0f : 1.0f;
 		UINT8* dest = cbMappedData + (objectIndex * alignedSize);
 		memcpy(dest, &objConstants, sizeof(SimpleObjectConstants));
 		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = constantBuffer->GetGPUVirtualAddress() + (objectIndex * alignedSize);
@@ -1033,7 +1120,8 @@ void App::Render()
 	renderingSystem.UpdateLights(commandList.Get());
 	renderingSystem.RenderLightingPass(commandList.Get(), viewProj, camPos);
 	temporalAA.Resolve(commandList.Get(),device.Get(),renderingSystem.GetHDRColorBuffer(),
-		renderingSystem.GetGBuffer()->GetPositionBuffer(),renderingSystem.GetGBuffer()->GetNormalBuffer(),viewProj);
+		renderingSystem.GetGBuffer()->GetPositionBuffer(),renderingSystem.GetGBuffer()->GetNormalBuffer(),
+		unjitteredVP, objectWorld(demoIndex), terrain.enabled && !animateTAACube);
 
 	if (!trailMouseInitialized) 
 	{
@@ -1059,17 +1147,48 @@ void App::Render()
 	trailPreviousX = lastMouseX;
 	trailPreviousY = lastMouseY;
 
-	commandList->Close();
+	if (FAILED(commandList->Close())) return false;
 	ID3D12CommandList* lists[] = { commandList.Get() };
 	commandQueue->ExecuteCommandLists(1, lists);
-	swapChain->Present(1, 0);
+	const HRESULT present = swapChain->Present(1, 0);
+	const HRESULT signal = commandQueue->Signal(fence.Get(), ++fenceValue);
+	return SUCCEEDED(present) && SUCCEEDED(signal);
 }
 void App::OnKeyDown(WPARAM key)
 {
+	const bool firstPress = key < 256 && !keys[key];
 	if (key < 256)
 		keys[key] = true;
+	if (firstPress)
+	{
+		switch (key)
+		{
+		case 'T': temporalAA.enabled = !temporalAA.enabled; temporalAA.ResetHistory(); return;
+		case 'M': temporalAA.showMotion = !temporalAA.showMotion; temporalAA.ResetHistory(); return;
+		case 'H': temporalAA.protectHistory = !temporalAA.protectHistory; temporalAA.ResetHistory(); return;
+		case 'J': temporalAA.reproject = !temporalAA.reproject; temporalAA.ResetHistory(); return;
+		case 'B': animateTAACube = !animateTAACube; return;
+		case 'K':
+			alternateTAACamera = !alternateTAACamera;
+			if (terrain.enabled) {
+				camera.position = alternateTAACamera ? Vec3(450, 550, -1250) : Vec3(0, 460, -1100);
+				const float dx = -camera.position.x;
+				const float dz = -650.0f - camera.position.z;
+				cameraYaw = atan2f(dx, dz);
+				cameraPitch = atan2f(250.0f - camera.position.y, sqrtf(dx * dx + dz * dz));
+			} else {
+				camera.position = alternateTAACamera ? Vec3(8, 6, 20) : Vec3(0, 5, 20);
+				cameraYaw = alternateTAACamera ? 3.52f : 3.14159f;
+				cameraPitch = -0.15f;
+			}
+			temporalAA.ResetHistory();
+			return;
+		}
+	}
 	if (!runtimeHotkeys)
 		return;
+	if ((key >= '1' && key <= '5') || (key >= VK_F1 && key <= VK_F7))
+		temporalAA.ResetHistory();
 	if (key == '1') renderingSystem.SetDebugMode(0.0f);
 	if (key == '2') renderingSystem.SetDebugMode(1.0f);
 	if (key == '3') renderingSystem.SetDebugMode(2.0f);
@@ -1176,6 +1295,12 @@ void App::OnMouseDown(int x, int y)
 void App::OnMouseUp()
 {
 	mousePressed = false;
+}
+void App::OnFocusLost()
+{
+	for (bool& key : keys) key = false;
+	mousePressed = false;
+	if (GetCapture() == _hwnd) ReleaseCapture();
 }
 void App::UpdateCamera(float deltaTime)
 {

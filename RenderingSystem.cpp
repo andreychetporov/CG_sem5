@@ -1756,12 +1756,29 @@ void RenderingSystem::ToggleMouseTrail()
 	if (!mouseTrailEnabled)
 		resetMouseTrail = true;
 }
-void RenderingSystem::Resize(ID3D12Device* device, UINT width, UINT height)
+bool RenderingSystem::Resize(ID3D12Device* device, UINT width, UINT height)
 {
 	this->width = width;
 	this->height = height;
-	gBuffer.Resize(device, width, height);
-	CreatePostProcessTargets(device, width, height);
+	if (!gBuffer.Resize(device, width, height) || !CreatePostProcessTargets(device, width, height))
+		return false;
+
+	// The lighting heap is persistent; its G-buffer descriptors must point at
+	// the newly allocated targets rather than the released pre-resize textures.
+	const UINT stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	CD3DX12_CPU_DESCRIPTOR_HANDLE handle(lightingCBHeap->GetCPUDescriptorHandleForHeapStart(), 2, stride);
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Texture2D.MipLevels = 1;
+	srv.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	device->CreateShaderResourceView(gBuffer.GetPositionBuffer(), &srv, handle);
+	handle.ptr += stride;
+	device->CreateShaderResourceView(gBuffer.GetNormalBuffer(), &srv, handle);
+	handle.ptr += stride;
+	srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	device->CreateShaderResourceView(gBuffer.GetAlbedoBuffer(), &srv, handle);
+	return true;
 }
 bool RenderingSystem::InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount, bool terrainDemo)
 {

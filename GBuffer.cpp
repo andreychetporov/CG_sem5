@@ -126,7 +126,7 @@ void GBuffer::TransitionToShaderResource(ID3D12GraphicsCommandList* commandList)
 		isInRenderTargetState = false;
 	}
 }
-void GBuffer::Resize(ID3D12Device* device, UINT width, UINT height)
+bool GBuffer::Resize(ID3D12Device* device, UINT width, UINT height)
 {
 	positionBuffer.Reset();
 	normalBuffer.Reset();
@@ -136,7 +136,7 @@ void GBuffer::Resize(ID3D12Device* device, UINT width, UINT height)
 	dsvHeap.Reset();
 	srvHeap.Reset();
 	isInRenderTargetState = false;
-	Initialize(device, width, height);
+	return Initialize(device, width, height);
 }
 void GBuffer::ClearRenderTargets(ID3D12GraphicsCommandList* commandList)
 {

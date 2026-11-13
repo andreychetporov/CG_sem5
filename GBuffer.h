@@ -10,7 +10,7 @@ public:
 	GBuffer();
 	~GBuffer();
 	bool Initialize(ID3D12Device* device, UINT width, UINT height);
-	void Resize(ID3D12Device* device, UINT width, UINT height);
+	bool Resize(ID3D12Device* device, UINT width, UINT height);
 	ID3D12Resource* GetPositionBuffer() const { return positionBuffer.Get(); }
 	ID3D12Resource* GetNormalBuffer() const { return normalBuffer.Get(); }
 	ID3D12Resource* GetAlbedoBuffer() const { return albedoBuffer.Get(); }

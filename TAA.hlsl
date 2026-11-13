@@ -1,46 +1,88 @@
 cbuffer Constants : register(b0) {
     float4x4 previousViewProjection;
+    float4x4 currentViewProjection;
     float2 inverseResolution;
+    float2 jitterDeltaUV;
+    float3 previousObjectOffset;
     uint historyValid;
     float historyWeight;
+    uint reprojectionEnabled;
+    uint protectionEnabled;
+    uint debugMotion;
+    uint staticSample;
 };
 Texture2D<float4> currentColor : register(t0);
 Texture2D<float4> worldPosition : register(t1);
 Texture2D<float4> normalData : register(t2);
 Texture2D<float4> historyColor : register(t3);
 Texture2D<float4> historyPosition : register(t4);
+Texture2D<float4> motionVectors : register(t5);
 SamplerState linearClamp : register(s0);
 struct Varying { float4 position:SV_POSITION;float2 uv:TEXCOORD0; };
 Varying VSMain(uint id:SV_VertexID) {
     Varying o;float2 uv=float2((id<<1)&2,id&2);
     o.position=float4(uv*float2(2,-2)+float2(-1,1),0,1);o.uv=uv;return o;
 }
+float3 PreviousWorld(float4 world) {
+    return world.xyz + (world.w == 2.0 ? previousObjectOffset : float3(0,0,0));
+}
+float2 ClipUV(float4 clip) {
+    return clip.xy / clip.w * float2(0.5,-0.5) + 0.5;
+}
+float4 PSMotion(Varying i):SV_TARGET {
+    int2 pixel=int2(i.position.xy);
+    float4 world=worldPosition.Load(int3(pixel,0));
+    if(world.w<0.5 || normalData.Load(int3(pixel,0)).w<0.5)
+        return 0;
+    float4 current=mul(float4(world.xyz,1),currentViewProjection);
+    float4 previous=mul(float4(PreviousWorld(world),1),previousViewProjection);
+    if(current.w<=0 || previous.w<=0 || previous.z<0 || previous.z>previous.w)
+        return 0;
+    // Previous minus current, in UV units, using only unjittered matrices.
+    return float4(ClipUV(previous)-ClipUV(current),1,0);
+}
 float4 PSMain(Varying i):SV_TARGET {
     int2 pixel=int2(i.position.xy);
     float3 current=currentColor.Load(int3(pixel,0)).rgb;
     float4 world=worldPosition.Load(int3(pixel,0));
-    // No object motion vectors yet: reject animated particle surfaces and sky.
+    float3 velocity=motionVectors.Load(int3(pixel,0)).xyz;
+    if(debugMotion!=0) {
+        float2 motionPx=velocity.xy/inverseResolution;
+        return float4(saturate(float3(0.5+motionPx/24,0.5)),1);
+    }
+    // Static coverage integration: jitter samples the same output pixel area.
+    // Keep both sides of the silhouette, including samples that hit the sky.
+    if(staticSample!=0) {
+        if(staticSample==1 || historyValid==0) return float4(current,1);
+        float3 accumulated=historyColor.Load(int3(pixel,0)).rgb;
+        if(staticSample<=8) accumulated=lerp(accumulated,current,1.0/staticSample);
+        return float4(accumulated,1);
+    }
+    // Compute derivatives before divergent early returns.
+    float footprint=max(length(ddx(world.xyz)),length(ddy(world.xyz)));
     if(historyValid==0 || world.w<0.5 || normalData.Load(int3(pixel,0)).w<0.5)
         return float4(current,1);
-    float4 previousClip=mul(float4(world.xyz,1),previousViewProjection);
-    if(previousClip.w<=0) return float4(current,1);
-    float3 ndc=previousClip.xyz/previousClip.w;
-    float2 uv=ndc.xy*float2(0.5,-0.5)+0.5;
-    if(any(uv<inverseResolution*0.5)||any(uv>1-inverseResolution*0.5)||ndc.z<0||ndc.z>1)
+    if(reprojectionEnabled!=0 && velocity.z<0.5) return float4(current,1);
+    float2 uv=i.uv;
+    if(reprojectionEnabled!=0) uv += velocity.xy + jitterDeltaUV;
+    if(any(uv<inverseResolution*0.5)||any(uv>1-inverseResolution*0.5))
         return float4(current,1);
-    uint w,h;historyPosition.GetDimensions(w,h);
-    int2 previousPixel=clamp(int2(uv*float2(w,h)),int2(0,0),int2(w-1,h-1));
-    float4 oldPosition=historyPosition.Load(int3(previousPixel,0));
-    float footprint=max(length(ddx(world.xyz)),length(ddy(world.xyz)));
-    if(oldPosition.w<0.5 || distance(oldPosition.xyz,world.xyz)>max(0.15,footprint*2))
-        return float4(current,1);
-    float3 lo=current,hi=current;
-    [unroll]for(int y=-1;y<=1;++y) [unroll]for(int x=-1;x<=1;++x) {
-        int2 p=clamp(pixel+int2(x,y),int2(0,0),int2(w-1,h-1));
-        float3 c=currentColor.Load(int3(p,0)).rgb;lo=min(lo,c);hi=max(hi,c);
+    float3 history=historyColor.SampleLevel(linearClamp,uv,0).rgb;
+    if(protectionEnabled!=0) {
+        uint w,h;historyPosition.GetDimensions(w,h);
+        int2 limit=int2(w-1,h-1);
+        int2 previousPixel=clamp(int2(uv*float2(w,h)),int2(0,0),limit);
+        float4 oldPosition=historyPosition.Load(int3(previousPixel,0));
+        if(oldPosition.w!=world.w || distance(oldPosition.xyz,PreviousWorld(world))>max(0.15,footprint*2))
+            return float4(current,1);
+        float3 lo=current,hi=current;
+        [unroll]for(int y=-1;y<=1;++y) [unroll]for(int x=-1;x<=1;++x) {
+            int2 p=clamp(pixel+int2(x,y),int2(0,0),limit);
+            float3 c=currentColor.Load(int3(p,0)).rgb;lo=min(lo,c);hi=max(hi,c);
+        }
+        history=clamp(history,lo,hi);
     }
-    float3 history=clamp(historyColor.SampleLevel(linearClamp,uv,0).rgb,lo,hi);
-    float motion=length((uv-i.uv)/inverseResolution);
+    float motion=length(velocity.xy/inverseResolution);
     float weight=lerp(historyWeight,0.65,saturate(motion/32));
     // Accumulate compressed HDR to reduce the influence of isolated bright samples.
     float3 a=current/(1+max(current.r,max(current.g,current.b)));

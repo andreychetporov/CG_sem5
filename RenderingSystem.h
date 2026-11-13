@@ -51,7 +51,7 @@ public:
 	RenderingSystem();
 	~RenderingSystem();
 	bool Initialize(ID3D12Device* device, ID3D12CommandQueue* commandQueue, UINT width, UINT height);
-	void Resize(ID3D12Device* device, UINT width, UINT height);
+	bool Resize(ID3D12Device* device, UINT width, UINT height);
 	void BeginGeometryPass(ID3D12GraphicsCommandList* commandList);
 	void EndGeometryPass(ID3D12GraphicsCommandList* commandList);
 	void RenderLightingPass(ID3D12GraphicsCommandList* commandList,
@@ -106,6 +106,7 @@ public:
 	bool GetEyeAdaptationTestEnabled() const { return eyeAdaptationTestEnabled; }
 	bool GetMouseTrailEnabled() const { return mouseTrailEnabled; }
 	GBuffer* GetGBuffer() { return &gBuffer; }
+	ID3D12Resource* GetHDRColorBuffer() const { return hdrColorBuffer.Get(); }
 	bool InitializeScene(ID3D12Device* device, UINT cubeCount, UINT sphereCount, bool terrainDemo = false);
 	void BuildOctree();
 	void UpdateFrustum(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& projection);
